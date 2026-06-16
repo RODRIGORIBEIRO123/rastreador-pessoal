@@ -12,7 +12,7 @@ import io
 st.set_page_config(page_title="Terminal de Gestão CNPI", layout="wide")
 st.title("📊 Terminal de Gestão Profissional")
 
-# Memória do aplicativo para não apagar os dados ao clicar nos botões
+# Memória do aplicativo
 if 'df_base' not in st.session_state: st.session_state.df_base = pd.DataFrame(columns=["Ativo", "Quantidade", "Preço Médio", "Data 1º Aporte"])
 if 'dados_mercado' not in st.session_state: st.session_state.dados_mercado = {}
 if 'df_simul' not in st.session_state: st.session_state.df_simul = pd.DataFrame()
@@ -35,48 +35,62 @@ def calcular_macro_acumulado(df_macro, data_inicio):
     except: return 0.0, 0.0
 
 def ignorar_ativo(ticker):
+    if pd.isna(ticker): return True
     t = str(ticker).strip().upper()
-    if t.startswith(('WIN', 'WDO', 'IND', 'DOL')) or pd.isna(ticker): return True
+    if not t or t == 'NAN': return True
+    if t.startswith(('WIN', 'WDO', 'IND', 'DOL')): return True
     t_limpo = t[:-1] if t.endswith('F') else t
     if re.match(r'^[A-Z]{4}[A-Z]\d+', t_limpo) and not t_limpo.endswith(('11', '34', '39')):
         if len(t_limpo) >= 6: return True
     return False
 
-# ==========================================
-# 2. UPLOAD E LEITURA (MOTOR UNIVERSAL BLINDADO)
-# ==========================================
+# 🛡️ O NOVO FILTRO ANTI-QUEBRAS PARA NÚMEROS
+def limpar_numero(x):
+    if pd.isna(x): return 0.0
+    if isinstance(x, (int, float, np.number)): return float(x)
+    x = str(x).replace('R$', '').strip()
+    if x == '' or x.upper() == 'NAN': return 0.0
+    
+    # Tratamento padrão Brasil -> Matemática Universal
+    if '.' in x and ',' in x:
+        x = x.replace('.', '').replace(',', '.') # Ex: 1.000,50 -> 1000.50
+    elif ',' in x:
+        x = x.replace(',', '.') # Ex: 10,50 -> 10.50
+        
+    try: return float(x)
+    except: return 0.0
+
 def ler_arquivo_b3(arquivo_upload):
     if arquivo_upload.name.endswith('.csv'):
         conteudo = arquivo_upload.getvalue()
-        try:
-            # Tenta decodificar quebrando o BOM (Byte Order Mark) invisível do Excel
-            texto = conteudo.decode('utf-8-sig')
-        except UnicodeDecodeError:
-            texto = conteudo.decode('latin1')
+        try: texto = conteudo.decode('utf-8-sig')
+        except UnicodeDecodeError: texto = conteudo.decode('latin1')
             
-        # Detecta automaticamente se o arquivo usa vírgula ou ponto-e-vírgula
-        primeira_linha = texto.split('\n')[0]
-        separador = ';' if ';' in primeira_linha else ','
-        
+        separador = ';' if ';' in texto.split('\n')[0] else ','
         df = pd.read_csv(io.StringIO(texto), sep=separador)
     else:
         df = pd.read_excel(arquivo_upload)
-        
     df.columns = df.columns.astype(str).str.strip()
     return df
 
+# ==========================================
+# 2. UPLOAD E LEITURA DA B3
+# ==========================================
 st.sidebar.header("1. Upload da B3")
 arquivo = st.sidebar.file_uploader("Arquivo Negociação B3", type=["xlsx", "csv"])
 
 if arquivo and st.session_state.df_base.empty:
-    with st.spinner("Processando histórico e alocando memória..."):
+    with st.spinner("Processando histórico e purificando dados..."):
         try:
             df = ler_arquivo_b3(arquivo)
             
-            # Conversão robusta de datas e números
             df['Data do Negócio'] = pd.to_datetime(df['Data do Negócio'], dayfirst=True, errors='coerce')
-            df['Preço'] = df['Preço'].astype(str).replace({r'R\$': '', r'\.': '', ',': '.'}, regex=True).astype(float)
-            df['Valor'] = df['Valor'].astype(str).replace({r'R\$': '', r'\.': '', ',': '.'}, regex=True).astype(float)
+            
+            # 🔥 Aplicação do Lava-Rápido de Números (Resolve o seu Erro!)
+            df['Quantidade'] = df['Quantidade'].apply(limpar_numero)
+            df['Preço'] = df['Preço'].apply(limpar_numero)
+            df['Valor'] = df['Valor'].apply(limpar_numero)
+            
             df = df.sort_values('Data do Negócio')
             
             posicoes = {}
@@ -84,9 +98,13 @@ if arquivo and st.session_state.df_base.empty:
                 if ignorar_ativo(row['Código de Negociação']): continue
                 ticker = str(row['Código de Negociação']).strip().upper()
                 ticker = ticker[:-1] if ticker.endswith('F') else ticker
-                qtd, valor, data = row['Quantidade'], row['Valor'], row['Data do Negócio']
+                
+                qtd = row['Quantidade']
+                valor = row['Valor']
+                data = row['Data do Negócio']
                 
                 if ticker not in posicoes: posicoes[ticker] = {'qtd': 0.0, 'valor': 0.0, 'primeiro_aporte': data}
+                
                 if row['Tipo de Movimentação'] == 'Compra':
                     posicoes[ticker]['qtd'] += qtd
                     posicoes[ticker]['valor'] += valor
@@ -108,14 +126,14 @@ if arquivo and st.session_state.df_base.empty:
             st.session_state.df_base = pd.DataFrame(ativos_limpos)
             st.rerun()
         except Exception as e:
-            st.error(f"Erro ao ler o arquivo. Certifique-se de que é a planilha original da B3. Detalhe: {e}")
+            st.error(f"Erro ao ler o arquivo. Detalhe técnico: {e}")
 
 # ==========================================
-# 3. INTERFACE DE EDIÇÃO MANUAL (BOTÕES EXPLÍCITOS)
+# 3. INTERFACE DE EDIÇÃO MANUAL
 # ==========================================
 if not st.session_state.df_base.empty:
     st.markdown("### 2. Edição Manual da Carteira")
-    st.markdown("Ajuste as quantidades, inclua FIIs que faltaram ou exclua o lixo residual. **As alterações são salvas automaticamente na tabela abaixo.**")
+    st.markdown("Ajuste as quantidades, inclua o que faltou ou exclua o lixo residual. **As alterações são salvas automaticamente na tabela abaixo.**")
     
     col1, col2 = st.columns([1, 1])
     
@@ -228,7 +246,7 @@ if not st.session_state.df_base.empty:
             st.markdown("### Simulador de Aportes")
             yield_desejado = st.number_input("Taxa de Risco - Yield Desejado (% Bazin):", value=6.0, min_value=0.1, step=0.5) / 100.0
             
-            st.markdown("Altere o LPA ou os Dividendos Projetados abaixo e simule as Margens de Segurança de Graham e Bazin:")
+            st.markdown("Altere o LPA ou os Dividendos Projetados abaixo e simule as Margens de Segurança:")
             df_simul_editado = st.data_editor(
                 st.session_state.df_simul, use_container_width=True, hide_index=True,
                 disabled=["Ativo", "Cotação Atual", "VPA (Contábil)"],
