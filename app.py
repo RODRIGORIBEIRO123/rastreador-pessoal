@@ -6,16 +6,20 @@ from bcb import sgs
 import re
 
 # ==========================================
-# 1. CONFIGURAÇÃO E CACHE DE DADOS
+# 1. CONFIGURAÇÃO E MEMÓRIA (STATE)
 # ==========================================
 st.set_page_config(page_title="Terminal de Gestão CNPI", layout="wide")
 st.title("📊 Terminal de Gestão Institucional")
 
-# Inicializa o cache na memória para evitar recarregamento desnecessário do Yahoo Finance
+# Inicializando a memória para não perder os dados ao clicar em botões
+if 'processado' not in st.session_state:
+    st.session_state.processado = False
+if 'df_base' not in st.session_state:
+    st.session_state.df_base = pd.DataFrame()
 if 'dados_mercado' not in st.session_state:
     st.session_state.dados_mercado = {}
-    st.session_state.processado = False
-    st.session_state.df_base = pd.DataFrame()
+if 'df_simul' not in st.session_state:
+    st.session_state.df_simul = pd.DataFrame()
 
 @st.cache_data(ttl=86400)
 def carregar_macro():
@@ -27,19 +31,13 @@ def carregar_macro():
         return pd.DataFrame()
 
 def calcular_macro_acumulado(df_macro, data_inicio):
-    if df_macro is None or df_macro.empty or pd.isna(data_inicio): 
-        return 0.0, 0.0
+    if df_macro is None or df_macro.empty or pd.isna(data_inicio): return 0.0, 0.0
     try:
         filtro = df_macro.loc[data_inicio:]
         cdi_acum = ((1 + filtro['CDI'].dropna()).prod() - 1) * 100
         ipca_acum = ((1 + filtro['IPCA'].dropna()).prod() - 1) * 100
         return cdi_acum, ipca_acum
-    except:
-        return 0.0, 0.0
-
-def limpar_ticker(ticker):
-    t = str(ticker).strip().upper()
-    return t[:-1] if t.endswith('F') else t
+    except: return 0.0, 0.0
 
 def ignorar_ativo(ticker):
     t = str(ticker).strip().upper()
@@ -52,8 +50,7 @@ def ignorar_ativo(ticker):
 # ==========================================
 # 2. MOTOR DE EXTRAÇÃO DA B3
 # ==========================================
-st.sidebar.header("📁 Entrada de Dados")
-arquivo = st.sidebar.file_uploader("Upload da planilha da B3", type=["xlsx", "csv"])
+arquivo = st.file_uploader("1. Faça o upload da planilha da B3 (.xlsx ou .csv)", type=["xlsx", "csv"])
 
 if arquivo and not st.session_state.processado:
     with st.spinner("Estruturando banco de dados da B3..."):
@@ -67,7 +64,8 @@ if arquivo and not st.session_state.processado:
         posicoes = {}
         for _, row in df.iterrows():
             if ignorar_ativo(row['Código de Negociação']): continue
-            ticker = limpar_ticker(row['Código de Negociação'])
+            ticker = str(row['Código de Negociação']).strip().upper()
+            ticker = ticker[:-1] if ticker.endswith('F') else ticker
             qtd, valor, data = row['Quantidade'], row['Valor'], row['Data do Negócio']
             
             if ticker not in posicoes:
@@ -93,56 +91,65 @@ if arquivo and not st.session_state.processado:
                     "Ativo": t, 
                     "Quantidade": float(d['qtd']), 
                     "Preço Médio": float(pm), 
-                    "1º Aporte": d['primeiro_aporte']
+                    "1º Aporte": d['primeiro_aporte'].date() if pd.notna(d['primeiro_aporte']) else pd.Timestamp.now().date()
                 })
         
         st.session_state.df_base = pd.DataFrame(ativos_limpos)
         st.session_state.processado = True
 
 # ==========================================
-# 3. INTERFACE DE GESTÃO HÍBRIDA
+# 3. INTERFACE DE EDIÇÃO HÍBRIDA
 # ==========================================
 if st.session_state.processado:
-    st.markdown("### 1. Auditoria e Correção de Posição")
-    st.markdown("Edite as quantidades e preços médios diretamente na tabela abaixo para alinhar com sua corretora.")
+    st.write("---")
+    st.subheader("2. Auditoria e Correção da Carteira")
+    st.markdown("""
+    * **Para Adicionar:** Role até o final da tabela e clique no `+` (ou clique na última linha cinza).
+    * **Para Excluir:** Selecione a caixa à esquerda do ativo e aperte a tecla `Delete` no seu teclado.
+    * **Para Editar:** Clique no número e digite a Quantidade ou o Preço Médio correto.
+    """)
     
-    # Data Editor nativo (Garante que os tipos de dados não quebrem)
+    # O Editor de Dados armazena as alterações em 'df_editado' (com num_rows='dynamic' ativado)
     df_editado = st.data_editor(
         st.session_state.df_base, 
         use_container_width=True, 
         num_rows="dynamic",
+        key="editor_carteira",
         column_config={
-            "1º Aporte": st.column_config.DateColumn("1º Aporte", format="DD/MM/YYYY"),
-            "Preço Médio": st.column_config.NumberColumn("Preço Médio", format="R$ %.2f", min_value=0.0)
+            "Ativo": st.column_config.TextColumn("Ativo", required=True),
+            "Quantidade": st.column_config.NumberColumn("Quantidade", min_value=0.0),
+            "Preço Médio": st.column_config.NumberColumn("Preço Médio", format="R$ %.2f", min_value=0.0),
+            "1º Aporte": st.column_config.DateColumn("1º Aporte", format="DD/MM/YYYY")
         }
     )
 
-    if st.button("🔄 Executar Integração com Mercado (Real-Time)", type="primary"):
+    # Botão para processar os dados ajustados
+    if st.button("🚀 Executar Integração e Calcular Valuation", type="primary"):
         df_macro = carregar_macro()
         progresso = st.progress(0)
         total = len(df_editado)
         data_12m = pd.Timestamp.now() - pd.DateOffset(years=1)
         
         dados_mercado = {}
+        linhas_simul_iniciais = []
+
         for i, row in df_editado.iterrows():
-            ticker = str(row['Ativo']).strip().upper()
-            if not ticker or pd.isna(row['Quantidade']) or row['Quantidade'] <= 0: continue
+            ticker = str(row.get('Ativo', '')).strip().upper()
+            if not ticker or pd.isna(row.get('Quantidade', 0)) or row.get('Quantidade', 0) <= 0: continue
             
-            # Fetching YFinance Data
             try:
                 acao = yf.Ticker(f"{ticker}.SA")
                 hist = acao.history(period="1d")
-                preco_atual = hist['Close'].iloc[-1] if not hist.empty else float(row['Preço Médio'])
+                preco_atual = float(hist['Close'].iloc[-1]) if not hist.empty else float(row['Preço Médio'])
                 
                 divs = acao.dividends
                 data_compra = pd.to_datetime(row['1º Aporte']) if pd.notna(row['1º Aporte']) else pd.Timestamp.now()
-                
-                divs_total = divs[divs.index.tz_localize(None) >= data_compra].sum() * float(row['Quantidade'])
-                divs_12m = divs[divs.index.tz_localize(None) >= data_12m].sum()
+                divs_total = float(divs[divs.index.tz_localize(None) >= data_compra].sum() * row['Quantidade'])
+                divs_12m = float(divs[divs.index.tz_localize(None) >= data_12m].sum())
                 
                 info = acao.info
-                lpa = info.get('trailingEps', 0)
-                vpa = info.get('bookValue', 0)
+                lpa = float(info.get('trailingEps', 0) or 0.0)
+                vpa = float(info.get('bookValue', 0) or 0.0)
                 
             except:
                 preco_atual, divs_total, divs_12m, lpa, vpa = float(row['Preço Médio']), 0.0, 0.0, 0.0, 0.0
@@ -150,18 +157,29 @@ if st.session_state.processado:
             cdi, ipca = calcular_macro_acumulado(df_macro, data_compra)
             
             dados_mercado[ticker] = {
+                "Qtd": float(row['Quantidade']),
+                "PM": float(row['Preço Médio']),
                 "Preço Atual": preco_atual,
                 "Div_Total": divs_total,
-                "Div_12m": divs_12m,
-                "LPA": lpa if lpa is not None else 0.0,
-                "VPA": vpa if vpa is not None else 0.0,
                 "CDI": cdi,
                 "IPCA": ipca
             }
+
+            # Prepara a base para o simulador de Valuation
+            linhas_simul_iniciais.append({
+                "Ativo": ticker,
+                "Cotação Atual": preco_atual,
+                "VPA (Constante)": vpa,
+                "LPA Projetado": lpa,
+                "Div. Projetado (R$)": divs_12m,
+                "Yield Desejado (%)": 6.0  # Padrão Bazin editável
+            })
+            
             progresso.progress((i + 1) / total)
             
         st.session_state.dados_mercado = dados_mercado
-        st.success("Integração concluída com sucesso!")
+        st.session_state.df_simul = pd.DataFrame(linhas_simul_iniciais)
+        st.success("Cotações, Proventos e Fundamentos sincronizados com sucesso!")
 
     # ==========================================
     # 4. PAINEL DE RELATÓRIOS (ABAS)
@@ -169,98 +187,78 @@ if st.session_state.processado:
     if st.session_state.dados_mercado:
         tab1, tab2 = st.tabs(["📈 Evolução de Rentabilidade", "🔎 Simulador Valuation (Graham & Bazin)"])
         
-        # --- ABA 1: RENTABILIDADE ---
+        # --- ABA 1: RENTABILIDADE (Com Ordenação) ---
         with tab1:
+            st.markdown("### Performance Histórica (Real-Time)")
             linhas_perf = []
-            for _, row in df_editado.iterrows():
-                t = str(row['Ativo']).strip().upper()
-                if t not in st.session_state.dados_mercado: continue
-                
-                qtd = float(row['Quantidade'])
-                pm = float(row['Preço Médio'])
-                dm = st.session_state.dados_mercado[t]
-                
-                investido = qtd * pm
-                saldo = qtd * dm['Preço Atual']
-                var_s_div = ((saldo / investido) - 1) * 100 if investido > 0 else 0
-                var_c_div = (((saldo + dm['Div_Total']) / investido) - 1) * 100 if investido > 0 else 0
+            for t, dm in st.session_state.dados_mercado.items():
+                investido = dm['Qtd'] * dm['PM']
+                saldo = dm['Qtd'] * dm['Preço Atual']
+                var_s_div = ((saldo / investido) - 1) * 100 if investido > 0 else np.nan
+                var_c_div = (((saldo + dm['Div_Total']) / investido) - 1) * 100 if investido > 0 else np.nan
                 
                 linhas_perf.append({
                     "Ativo": t,
-                    "Qtd": int(qtd),
-                    "Preço Médio": pm,
+                    "Qtd": int(dm['Qtd']),
+                    "Preço Médio": dm['PM'],
                     "Preço Atual": dm['Preço Atual'],
-                    "Evolução (S/ Div)": var_s_div,
-                    "Evolução (C/ Div)": var_c_div,
+                    "Evol. s/ Div": var_s_div,
+                    "Evol. c/ Div": var_c_div,
                     "IPCA Acum.": dm['IPCA'],
                     "CDI Acum.": dm['CDI']
                 })
             
-            df_perf = pd.DataFrame(linhas_perf)
-            
-            # Configuração nativa de colunas para formatação + ordenação
             cfg_perf = {
                 "Preço Médio": st.column_config.NumberColumn("Preço Médio", format="R$ %.2f"),
                 "Preço Atual": st.column_config.NumberColumn("Preço Atual", format="R$ %.2f"),
-                "Evolução (S/ Div)": st.column_config.NumberColumn("Evol. s/ Div", format="%.2f %%"),
-                "Evolução (C/ Div)": st.column_config.NumberColumn("Evol. c/ Div", format="%.2f %%"),
+                "Evol. s/ Div": st.column_config.NumberColumn("Evol. s/ Div", format="%.2f %%"),
+                "Evol. c/ Div": st.column_config.NumberColumn("Evol. c/ Div", format="%.2f %%"),
                 "IPCA Acum.": st.column_config.NumberColumn("IPCA", format="%.2f %%"),
                 "CDI Acum.": st.column_config.NumberColumn("CDI", format="%.2f %%")
             }
-            st.dataframe(df_perf, use_container_width=True, hide_index=True, column_config=cfg_perf)
+            # DataFrame puramente Numérico -> Ordenação liberada!
+            st.dataframe(pd.DataFrame(linhas_perf), use_container_width=True, hide_index=True, column_config=cfg_perf)
 
         # --- ABA 2: SIMULADOR DE VALUATION ---
         with tab2:
-            st.markdown("### Simulador Projetivo")
-            st.markdown("Altere os campos **LPA Projetado** e **Div. Projetado** para simular novos cenários. O cálculo de Preço Teto e Margem atualizará automaticamente na tabela abaixo.")
+            st.markdown("### 1. Inserção de Parâmetros Projetivos")
+            st.markdown("Altere os campos **LPA Projetado**, **Div. Projetado (R$)** ou o **Yield Desejado (%)** (Bazin). A tabela de resultados abaixo será recalculada automaticamente.")
             
-            linhas_simul = []
-            for _, row in df_editado.iterrows():
-                t = str(row['Ativo']).strip().upper()
-                if t not in st.session_state.dados_mercado: continue
-                dm = st.session_state.dados_mercado[t]
-                
-                linhas_simul.append({
-                    "Ativo": t,
-                    "VPA (Constante)": float(dm['VPA']),
-                    "LPA Projetado": float(dm['LPA']),
-                    "Div. Projetado (12m)": float(dm['Div_12m'])
-                })
-            
-            df_simul_input = pd.DataFrame(linhas_simul)
-            
-            # Tabela de input para o usuário digitar os lucros projetados
-            df_simul_output = st.data_editor(
-                df_simul_input,
+            # Tabela de Input (Editável)
+            df_simul_editado = st.data_editor(
+                st.session_state.df_simul,
                 use_container_width=True,
                 hide_index=True,
-                disabled=["Ativo", "VPA (Constante)"],
+                disabled=["Ativo", "Cotação Atual", "VPA (Constante)"],
                 column_config={
+                    "Cotação Atual": st.column_config.NumberColumn(format="R$ %.2f"),
                     "VPA (Constante)": st.column_config.NumberColumn(format="R$ %.2f"),
-                    "LPA Projetado": st.column_config.NumberColumn(format="R$ %.2f", min_value=0.0),
-                    "Div. Projetado (12m)": st.column_config.NumberColumn(format="R$ %.2f", min_value=0.0)
+                    "LPA Projetado": st.column_config.NumberColumn(format="R$ %.2f"),
+                    "Div. Projetado (R$)": st.column_config.NumberColumn(format="R$ %.2f"),
+                    "Yield Desejado (%)": st.column_config.NumberColumn(format="%.2f %%", min_value=0.1)
                 }
             )
             
-            # Executa a matemática em tempo real baseada nos inputs do usuário
+            # Motor de Cálculo (Reativo às edições acima)
             linhas_valuation = []
-            for _, row in df_simul_output.iterrows():
+            for _, row in df_simul_editado.iterrows():
                 t = row['Ativo']
+                cotacao = row['Cotação Atual']
                 vpa = row['VPA (Constante)']
                 lpa_proj = row['LPA Projetado']
-                div_proj = row['Div. Projetado (12m)']
-                preco_atual = st.session_state.dados_mercado[t]['Preço Atual']
+                div_proj = row['Div. Projetado (R$)']
+                yield_desejado = row['Yield Desejado (%)'] / 100.0  # Converte 6% para 0.06
                 
-                # Fórmulas
+                # Graham (Impede cálculo negativo)
                 graham = (22.5 * lpa_proj * vpa) ** 0.5 if (lpa_proj > 0 and vpa > 0) else np.nan
-                margem_g = ((graham / preco_atual) - 1) * 100 if (pd.notna(graham) and preco_atual > 0) else np.nan
+                margem_g = ((graham / cotacao) - 1) * 100 if (pd.notna(graham) and cotacao > 0) else np.nan
                 
-                bazin = div_proj / 0.06 if div_proj > 0 else np.nan
-                margem_b = ((bazin / preco_atual) - 1) * 100 if (pd.notna(bazin) and preco_atual > 0) else np.nan
+                # Bazin (Cálculo dinâmico com a taxa do usuário)
+                bazin = div_proj / yield_desejado if (div_proj > 0 and yield_desejado > 0) else np.nan
+                margem_b = ((bazin / cotacao) - 1) * 100 if (pd.notna(bazin) and cotacao > 0) else np.nan
                 
                 linhas_valuation.append({
                     "Ativo": t,
-                    "Cotação Atual": preco_atual,
                     "Preço Justo (Graham)": graham,
                     "Margem Graham": margem_g,
                     "Preço Teto (Bazin)": bazin,
@@ -268,12 +266,11 @@ if st.session_state.processado:
                 })
                 
             cfg_val = {
-                "Cotação Atual": st.column_config.NumberColumn("Cotação Atual", format="R$ %.2f"),
                 "Preço Justo (Graham)": st.column_config.NumberColumn("Preço Justo (Graham)", format="R$ %.2f"),
                 "Margem Graham": st.column_config.NumberColumn("Margem Graham", format="%.2f %%"),
                 "Preço Teto (Bazin)": st.column_config.NumberColumn("Preço Teto (Bazin)", format="R$ %.2f"),
                 "Margem Bazin": st.column_config.NumberColumn("Margem Bazin", format="%.2f %%")
             }
             
-            st.markdown("### Resultado do Valuation (Ordenável)")
+            st.markdown("### 2. Resultados do Valuation (Ordenável)")
             st.dataframe(pd.DataFrame(linhas_valuation), use_container_width=True, hide_index=True, column_config=cfg_val)
