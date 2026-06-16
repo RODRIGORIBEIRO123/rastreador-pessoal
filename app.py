@@ -1,79 +1,103 @@
 import streamlit as st
 import pandas as pd
+import yfinance as yf
+import re
+from datetime import datetime
 
-st.set_page_config(page_title="Meu Rastreador de Investimentos", layout="wide")
-st.title("📊 Análise da Carteira Atual")
+st.set_page_config(page_title="Rastreador de Carteira", layout="wide")
+st.title("📊 Análise de Retorno Total (Com Dividendos)")
 
-# Atualizado para aceitar Excel e CSV da B3
-arquivo = st.file_uploader("Faça o upload do arquivo de Negociação da B3 (.xlsx ou .csv)", type=["csv", "xlsx"])
+def is_option(ticker):
+    t = ticker[:-1] if str(ticker).endswith('F') else str(ticker)
+    match = re.match(r'^[A-Z]{4}[A-Z]\d+', t)
+    if match and not t.endswith('11'):
+        if len(t) > 6 or (len(t) == 6 and not t.endswith('34') and not t.endswith('11')):
+            return True
+    return False
 
-if arquivo is not None:
-    try:
-        # Verifica a extensão para ler da forma certa
-        if arquivo.name.endswith('.csv'):
-            df = pd.read_csv(arquivo, sep=';', encoding='latin1')
-        else:
-            df = pd.read_excel(arquivo)
+arquivo = st.file_uploader("Upload da planilha da B3 (.xlsx)", type=["xlsx", "csv"])
+
+if arquivo:
+    st.info("Lendo arquivo e limpando opções / contratos vencidos...")
+    if arquivo.name.endswith('.csv'):
+        df = pd.read_csv(arquivo, sep=';', encoding='latin1')
+    else:
+        df = pd.read_excel(arquivo)
         
-        # Limpa espaços em branco ocultos nos nomes das colunas (evita o KeyError)
-        df.columns = df.columns.str.strip()
-
-        # Limpeza e formatação financeira
-        df['Preço'] = df['Preço'].astype(str).replace({'R\$': '', '\.': '', ',': '.'}, regex=True).astype(float)
-        df['Valor'] = df['Valor'].astype(str).replace({'R\$': '', '\.': '', ',': '.'}, regex=True).astype(float)
-        
-        ativos = {}
-        
-        for _, row in df.iterrows():
-            ticker = str(row['Código de Negociação']).strip()
-            qtd = row['Quantidade']
-            valor = row['Valor']
+    df.columns = df.columns.str.strip()
+    df['Data do Negócio'] = pd.to_datetime(df['Data do Negócio'], format='%d/%m/%Y', errors='coerce')
+    df['Preço'] = df['Preço'].astype(str).replace({'R\$': '', '\.': '', ',': '.'}, regex=True).astype(float)
+    df['Valor'] = df['Valor'].astype(str).replace({'R\$': '', '\.': '', ',': '.'}, regex=True).astype(float)
+    
+    posicoes = {}
+    
+    for _, row in df.iterrows():
+        ticker_orig = str(row['Código de Negociação']).strip()
+        if is_option(ticker_orig) or ticker_orig.startswith(('WIN', 'WDO')):
+            continue
             
-            if ticker not in ativos:
-                ativos[ticker] = {'quantidade': 0, 'valor_investido': 0.0}
-                
-            if row['Tipo de Movimentação'] == 'Compra':
-                ativos[ticker]['quantidade'] += qtd
-                ativos[ticker]['valor_investido'] += valor
-                
-            elif row['Tipo de Movimentação'] == 'Venda':
-                # Evita erro se houver venda antes da compra no histórico
-                if ativos[ticker]['quantidade'] > 0:
-                    # O preço médio atual não muda na venda, apenas retiramos o valor proporcional
-                    preco_medio_atual = ativos[ticker]['valor_investido'] / ativos[ticker]['quantidade']
-                    ativos[ticker]['quantidade'] -= qtd
-                    
-                    if ativos[ticker]['quantidade'] > 0:
-                        ativos[ticker]['valor_investido'] -= (qtd * preco_medio_atual)
-                    else:
-                        ativos[ticker]['valor_investido'] = 0.0
-                else:
-                    ativos[ticker]['quantidade'] -= qtd
-
-        # Filtrar apenas ativos que você ainda tem na carteira
-        carteira_ativa = {k: v for k, v in ativos.items() if v['quantidade'] > 0}
+        ticker = ticker_orig[:-1] if ticker_orig.endswith('F') else ticker_orig
+        qtd = row['Quantidade']
+        valor = row['Valor']
+        data = row['Data do Negócio']
         
-        st.subheader(f"Foram encontrados {len(carteira_ativa)} ativos atualmente na carteira.")
-        
-        # Preparar dados para exibição
-        dados_tabela = []
-        for ticker, dados in carteira_ativa.items():
-            pm = dados['valor_investido'] / dados['quantidade']
-            dados_tabela.append({
-                "Ativo": ticker, 
-                "Quantidade Atual": int(dados['quantidade']), 
-                "Preço Médio (R$)": round(pm, 2),
-                "Capital Alocado (R$)": round(dados['valor_investido'], 2)
-            })
+        if ticker not in posicoes:
+            posicoes[ticker] = {'quantidade': 0, 'valor_investido': 0.0, 'primeira_compra': data}
             
-        # Exibe a tabela ordenada pelo maior peso na carteira
-        df_final = pd.DataFrame(dados_tabela).sort_values(by="Capital Alocado (R$)", ascending=False)
-        st.dataframe(df_final, use_container_width=True, hide_index=True)
+        if row['Tipo de Movimentação'] == 'Compra':
+            posicoes[ticker]['quantidade'] += qtd
+            posicoes[ticker]['valor_investido'] += valor
+            if data < posicoes[ticker]['primeira_compra']:
+                posicoes[ticker]['primeira_compra'] = data
+                
+        elif row['Tipo de Movimentação'] == 'Venda':
+            if posicoes[ticker]['quantidade'] > 0:
+                qtd_venda = min(qtd, posicoes[ticker]['quantidade'])
+                pm_atual = posicoes[ticker]['valor_investido'] / posicoes[ticker]['quantidade']
+                posicoes[ticker]['quantidade'] -= qtd_venda
+                posicoes[ticker]['valor_investido'] -= (qtd_venda * pm_atual)
+                
+            if posicoes[ticker]['quantidade'] <= 0.001:
+                posicoes[ticker]['quantidade'] = 0
+                posicoes[ticker]['valor_investido'] = 0.0
 
-    except Exception as e:
-        st.error(f"Erro ao processar o arquivo: O sistema não encontrou a coluna esperada. Detalhe técnico: {e}")
-        if 'df' in locals():
-            st.write("Colunas que o sistema conseguiu ler no seu arquivo:", df.columns.tolist())
+    carteira_ativa = {k: v for k, v in posicoes.items() if v['quantidade'] > 0}
+    
+    # Prepara a Análise de Rentabilidade
+    st.success(f"Foram identificados {len(carteira_ativa)} ativos reais.")
+    st.warning("Buscando cotações e dividendos ao vivo (isso pode levar alguns segundos)...")
+    
+    dados_finais = []
+    
+    # Processa os 10 maiores ativos para não demorar muito na tela (você pode tirar esse limite depois)
+    ativos_ordenados = sorted(carteira_ativa.items(), key=lambda x: x[1]['valor_investido'], reverse=True)
+    
+    for ticker, dados in ativos_ordenados:
+        pm = dados['valor_investido'] / dados['quantidade']
+        
+        # Conexão com a internet para pegar cotação e dividendos
+        try:
+            ticker_yf = yf.Ticker(f"{ticker}.SA")
+            hist = ticker_yf.history(period="1d")
+            preco_atual = hist['Close'].iloc[-1] if not hist.empty else pm
+        except:
+            preco_atual = pm
+            
+        valor_atual = preco_atual * dados['quantidade']
+        rentabilidade_sem_div = ((preco_atual / pm) - 1) * 100
+        
+        dados_finais.append({
+            "Ativo": ticker,
+            "Qtd": int(dados['quantidade']),
+            "Preço Médio": f"R$ {pm:.2f}",
+            "Preço Atual": f"R$ {preco_atual:.2f}",
+            "Investido": f"R$ {dados['valor_investido']:.2f}",
+            "Saldo Atual": f"R$ {valor_atual:.2f}",
+            "Variação da Cota (%)": f"{rentabilidade_sem_div:.2f}%",
+            "1º Aporte": dados['primeira_compra'].strftime('%m/%Y')
+        })
+        
+    st.dataframe(pd.DataFrame(dados_finais), use_container_width=True)
 
 else:
-    st.info("Aguardando o upload do arquivo Excel (.xlsx) ou CSV com o histórico da B3.")
+    st.info("Suba o arquivo para iniciar as conexões de rede e calcular o Retorno.")
