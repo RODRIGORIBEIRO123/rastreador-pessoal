@@ -190,7 +190,6 @@ if not st.session_state.df_base.empty:
         for i, row in df_editado.iterrows():
             ticker = str(row['Ativo']).strip().upper()
             try:
-                # O CDI agora obedece estritamente a Data que o usuário editou
                 data_compra = pd.to_datetime(row['Data 1º Aporte']) if pd.notna(row['Data 1º Aporte']) else pd.Timestamp.now()
                 
                 acao = yf.Ticker(f"{ticker}.SA")
@@ -214,10 +213,9 @@ if not st.session_state.df_base.empty:
                 "Preço Atual": preco_atual, "Div_Total": divs_total, "CDI": cdi, "IPCA": ipca, "Meses": meses_investido
             }
 
-            # Prepara a base do simulador com um Yield exigido padrão de 6% (Editável pelo usuário depois)
             linhas_simul_iniciais.append({
                 "Ativo": ticker, "Cotação Atual": preco_atual, "VPA (Contábil)": vpa,
-                "LPA Projetado": lpa, "Div. Projetado (R$)": divs_12m, "Yield Desejado (%)": 6.0
+                "LPA Projetado": lpa, "Div. Projetado (R$)": divs_12m
             })
             progresso.progress((i + 1) / total)
             
@@ -277,25 +275,28 @@ if not st.session_state.df_base.empty:
         # --- ABA 2: BAZIN ---
         with tab2:
             st.markdown("### Método Décio Bazin (Foco em Renda Passiva)")
-            st.markdown("Edite o **Dividendo Projetado (R$)** ou o **Yield Desejado (%)** por ativo. O Preço Teto calculará automaticamente.")
+            st.markdown("Edite o **Dividendo Projetado (R$)** na tabela abaixo. O Yield global exigido será aplicado para encontrar o seu Preço Teto exato.")
             
-            df_bazin_view = st.session_state.df_simul[["Ativo", "Cotação Atual", "Div. Projetado (R$)", "Yield Desejado (%)"]].copy()
+            # Campo Global de Yield Desejado (Aplica a toda a carteira)
+            yield_desejado = st.number_input("Taxa de Risco - Yield Desejado (%):", value=6.0, min_value=0.1, step=0.5) / 100.0
+            
+            # O Erro do KeyError estava aqui. Agora puxamos apenas 3 colunas vitais:
+            df_bazin_view = st.session_state.df_simul[["Ativo", "Cotação Atual", "Div. Projetado (R$)"]].copy()
             df_bazin_editado = st.data_editor(
                 df_bazin_view, use_container_width=True, hide_index=True,
                 disabled=["Ativo", "Cotação Atual"],
                 column_config={
                     "Cotação Atual": st.column_config.NumberColumn(format="R$ %.2f"),
-                    "Div. Projetado (R$)": st.column_config.NumberColumn("Div. Projetado (R$)", format="R$ %.2f"),
-                    "Yield Desejado (%)": st.column_config.NumberColumn("Yield Exigido (%)", format="%.2f %%")
+                    "Div. Projetado (R$)": st.column_config.NumberColumn("Div. Projetado (R$)", format="R$ %.2f")
                 }
             )
             
             linhas_bazin = []
             for _, row in df_bazin_editado.iterrows():
                 t, cotacao = row['Ativo'], row['Cotação Atual']
-                div_proj, yield_req = row['Div. Projetado (R$)'], (row['Yield Desejado (%)'] / 100.0)
+                div_proj = row['Div. Projetado (R$)']
                 
-                bazin = div_proj / yield_req if (div_proj > 0 and yield_req > 0) else np.nan
+                bazin = div_proj / yield_desejado if (div_proj > 0 and yield_desejado > 0) else np.nan
                 margem_b = ((bazin / cotacao) - 1) * 100 if (pd.notna(bazin) and cotacao > 0) else np.nan
                 linhas_bazin.append({"Ativo": t, "Cotação Atual": cotacao, "Preço Teto (Bazin)": bazin, "Margem de Segurança": margem_b})
                 
