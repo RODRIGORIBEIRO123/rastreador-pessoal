@@ -3,3 +3,4 @@ pandas
 yfinance
 python-bcb
 openpyxl
+plotly
