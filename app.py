@@ -7,9 +7,34 @@ import re
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="Terminal de Gestão | CNPI", layout="wide")
 st.title("📊 Terminal de Gestão Híbrido")
-st.markdown("Ajuste a sua carteira abaixo. **Clique nos cabeçalhos das tabelas finais para ordenar os valores.**")
 
-# --- FUNÇÕES ÚTEIS ---
+# --- GESTÃO DE MEMÓRIA (Evita que a tabela suma ao ordenar) ---
+if 'processado' not in st.session_state:
+    st.session_state.processado = False
+    st.session_state.dados_perf = []
+    st.session_state.dados_val = []
+
+# --- FUNÇÕES DE MÁSCARA VISUAL (BRL RIGOROSO) ---
+def formatar_brl(valor):
+    try:
+        if pd.isna(valor) or valor == 0: return "R$ 0,00"
+        return f"R$ {float(valor):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    except: return "R$ 0,00"
+
+def formatar_pct(valor):
+    try:
+        if pd.isna(valor): return "0,00%"
+        return f"{float(valor):,.2f}%".replace(".", ",")
+    except: return "0,00%"
+
+def formatar_margem(valor):
+    try:
+        valor = float(valor)
+        if pd.isna(valor) or valor == 0: return "-"
+        sinal = "🟢 " if valor > 0 else "🔴 "
+        return f"{sinal}{valor:,.2f}%".replace(".", ",")
+    except: return "-"
+
 def eh_opcao_ou_futuro(ticker):
     if pd.isna(ticker): return True
     ticker = str(ticker).strip().upper()
@@ -93,7 +118,7 @@ if arquivo:
         }
     )
 
-    # --- PASSO 2: CÁLCULOS E RELATÓRIOS ---
+    # --- PASSO 2: CÁLCULOS (Gravando na Memória) ---
     if st.button("🚀 Gerar Valuation e Retorno Total", type="primary"):
         df_macro = obter_dados_macro()
         progress_bar = st.progress(0)
@@ -129,16 +154,16 @@ if arquivo:
             except:
                 preco_atual, total_dividendos, divs_12m, lpa, vpa = pm_real, 0.0, 0.0, 0, 0
 
-            # MATEMÁTICA PURA (FLOAT)
             valor_atual = preco_atual * qtd_real
             var_cota = ((valor_atual / valor_investido_real) - 1) * 100 if valor_investido_real > 0 else 0
             var_total = (((valor_atual + total_dividendos) / valor_investido_real) - 1) * 100 if valor_investido_real > 0 else 0
             cdi_acum, ipca_acum = calcular_macro_acumulado(df_macro, data_compra)
 
+            # Salva os valores MATEMÁTICOS puros na memória para permitir a ordenação
             dados_perf.append({
                 "Ativo": ticker, "Qtd": int(qtd_real),
-                "PM Real": float(pm_real), "Cotação": float(preco_atual),
-                "Investido": float(valor_investido_real), "Saldo": float(valor_atual),
+                "PM Real": float(pm_real), "Cotação Atual": float(preco_atual),
+                "Investido": float(valor_investido_real), "Saldo Atual": float(valor_atual),
                 "Var. Cota": float(var_cota), "Retorno Total": float(var_total),
                 "IPCA (Período)": float(ipca_acum), "CDI (Período)": float(cdi_acum)
             })
@@ -148,48 +173,60 @@ if arquivo:
             bazin = divs_12m / 0.06 if divs_12m > 0 else 0
             margem_b = ((bazin / preco_atual) - 1) * 100 if bazin > 0 and preco_atual > 0 else 0
 
-            # Identificadores Visuais
-            status_g = "🟢" if margem_g > 0 else ("🔴" if graham > 0 else "-")
-            status_b = "🟢" if margem_b > 0 else ("🔴" if bazin > 0 else "-")
-
             dados_val.append({
                 "Ativo": ticker, "Cotação": float(preco_atual),
                 "LPA": float(lpa), "VPA": float(vpa), "Div. 12m": float(divs_12m),
-                "Preço Graham": float(graham), "Status Graham": status_g, "Margem Graham": float(margem_g),
-                "Preço Bazin": float(bazin), "Status Bazin": status_b, "Margem Bazin": float(margem_b)
+                "Preço Graham": float(graham), "Margem Graham": float(margem_g),
+                "Preço Bazin": float(bazin), "Margem Bazin": float(margem_b)
             })
             progress_bar.progress((i + 1) / total_ativos)
-        
+            
+        st.session_state.dados_perf = dados_perf
+        st.session_state.dados_val = dados_val
+        st.session_state.processado = True
+
+    # --- PASSO 3: EXIBIÇÃO E ORDENAÇÃO INTERATIVA ---
+    if st.session_state.processado:
         st.write("---")
         tab1, tab2 = st.tabs(["📈 Rentabilidade e Retorno Total", "🔎 Valuation (Graham & Bazin)"])
         
-        # MÁSCARAS DE COLUNA STREAMLIT (Mantém a ordenação viva)
-        col_config_perf = {
-            "PM Real": st.column_config.NumberColumn("PM Real", format="R$ %.2f"),
-            "Cotação": st.column_config.NumberColumn("Cotação", format="R$ %.2f"),
-            "Investido": st.column_config.NumberColumn("Investido", format="R$ %.2f"),
-            "Saldo": st.column_config.NumberColumn("Saldo", format="R$ %.2f"),
-            "Var. Cota": st.column_config.NumberColumn("Var. Cota", format="%.2f %%"),
-            "Retorno Total": st.column_config.NumberColumn("Retorno Total", format="%.2f %%"),
-            "IPCA (Período)": st.column_config.NumberColumn("IPCA", format="%.2f %%"),
-            "CDI (Período)": st.column_config.NumberColumn("CDI", format="%.2f %%")
-        }
-        
-        col_config_val = {
-            "Cotação": st.column_config.NumberColumn("Cotação", format="R$ %.2f"),
-            "LPA": st.column_config.NumberColumn("LPA", format="R$ %.2f"),
-            "VPA": st.column_config.NumberColumn("VPA", format="R$ %.2f"),
-            "Div. 12m": st.column_config.NumberColumn("Div. 12m", format="R$ %.2f"),
-            "Preço Graham": st.column_config.NumberColumn("Preço Graham", format="R$ %.2f"),
-            "Margem Graham": st.column_config.NumberColumn("Margem Graham", format="%.2f %%"),
-            "Preço Bazin": st.column_config.NumberColumn("Preço Bazin", format="R$ %.2f"),
-            "Margem Bazin": st.column_config.NumberColumn("Margem Bazin", format="%.2f %%")
-        }
+        with tab1:
+            # Painel de Controle de Ordem (Aba 1)
+            col1, col2 = st.columns([2, 1])
+            with col1:
+                ord_t1 = st.selectbox("Ordenar Tabela por:", ["Retorno Total", "Saldo Atual", "Var. Cota", "Investido"], key="ord_t1")
+            with col2:
+                asc_t1 = st.radio("Ordem:", ["Decrescente ⬇️", "Crescente ⬆️"], key="asc_t1", horizontal=True)
 
-        with tab1: 
-            st.dataframe(pd.DataFrame(dados_perf), use_container_width=True, hide_index=True, column_config=col_config_perf)
-        with tab2: 
-            st.dataframe(pd.DataFrame(dados_val), use_container_width=True, hide_index=True, column_config=col_config_val)
+            df_perf = pd.DataFrame(st.session_state.dados_perf)
+            # Ordena matematicamente ANTES de formatar o texto
+            df_perf = df_perf.sort_values(by=ord_t1, ascending=(asc_t1 == "Crescente ⬆️"))
+
+            # Formata visualmente as colunas
+            for col in ["PM Real", "Cotação Atual", "Investido", "Saldo Atual"]:
+                df_perf[col] = df_perf[col].apply(formatar_brl)
+            for col in ["Var. Cota", "Retorno Total", "IPCA (Período)", "CDI (Período)"]:
+                df_perf[col] = df_perf[col].apply(formatar_pct)
+
+            st.dataframe(df_perf, use_container_width=True, hide_index=True)
+
+        with tab2:
+            # Painel de Controle de Ordem (Aba 2)
+            col3, col4 = st.columns([2, 1])
+            with col3:
+                ord_t2 = st.selectbox("Ordenar Valuation por:", ["Margem Bazin", "Margem Graham", "Div. 12m", "Cotação"], key="ord_t2")
+            with col4:
+                asc_t2 = st.radio("Ordem:", ["Decrescente ⬇️", "Crescente ⬆️"], key="asc_t2", horizontal=True)
+
+            df_val = pd.DataFrame(st.session_state.dados_val)
+            df_val = df_val.sort_values(by=ord_t2, ascending=(asc_t2 == "Crescente ⬆️"))
+
+            for col in ["Cotação", "LPA", "VPA", "Div. 12m", "Preço Graham", "Preço Bazin"]:
+                df_val[col] = df_val[col].apply(formatar_brl)
+            for col in ["Margem Graham", "Margem Bazin"]:
+                df_val[col] = df_val[col].apply(formatar_margem)
+
+            st.dataframe(df_val, use_container_width=True, hide_index=True)
 
 else:
     st.info("Aguardando o upload do ficheiro da B3 para iniciar.")
