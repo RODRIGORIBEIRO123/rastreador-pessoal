@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 import yfinance as yf
 from bcb import sgs
 import re
@@ -7,7 +8,7 @@ import re
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="Terminal de Gestão | CNPI", layout="wide")
 st.title("📊 Terminal de Gestão Híbrido")
-st.markdown("Ajuste a sua carteira abaixo. **Clique nos cabeçalhos das tabelas ou nos 3 pontinhos para ordenar os valores.**")
+st.markdown("Ajuste a sua carteira abaixo. **Clique nos cabeçalhos das tabelas ou nos 3 pontinhos para ordenar do maior para o menor.**")
 
 # --- FUNÇÕES ÚTEIS ---
 def eh_opcao_ou_futuro(ticker):
@@ -38,7 +39,7 @@ def calcular_macro_acumulado(df_macro, data_inicio):
 arquivo = st.file_uploader("1. Upload da planilha 'Negociação' da B3 (.xlsx ou .csv)", type=["xlsx", "csv"])
 
 if arquivo:
-    with st.spinner("Processando histórico da B3..."):
+    with st.spinner("Processando histórico e alocando memória..."):
         df = pd.read_csv(arquivo, sep=';', encoding='latin1') if arquivo.name.endswith('.csv') else pd.read_excel(arquivo)
         df.columns = df.columns.str.strip()
         df['Data do Negócio'] = pd.to_datetime(df['Data do Negócio'], format='%d/%m/%Y', errors='coerce')
@@ -93,7 +94,7 @@ if arquivo:
         }
     )
 
-    # --- PASSO 2: CÁLCULOS ---
+    # --- PASSO 2: CÁLCULOS E VALUATION ---
     if st.button("🚀 Gerar Valuation e Retorno Total", type="primary"):
         df_macro = obter_dados_macro()
         progress_bar = st.progress(0)
@@ -129,53 +130,64 @@ if arquivo:
             except:
                 preco_atual, total_dividendos, divs_12m, lpa, vpa = pm_real, 0.0, 0.0, 0, 0
 
-            # MATEMÁTICA PURA (FLOAT)
+            # MATEMÁTICA PURA 
             valor_atual = preco_atual * qtd_real
-            var_cota = ((valor_atual / valor_investido_real) - 1) * 100 if valor_investido_real > 0 else 0
-            var_total = (((valor_atual + total_dividendos) / valor_investido_real) - 1) * 100 if valor_investido_real > 0 else 0
+            var_cota = ((valor_atual / valor_investido_real) - 1) * 100 if valor_investido_real > 0 else np.nan
+            var_total = (((valor_atual + total_dividendos) / valor_investido_real) - 1) * 100 if valor_investido_real > 0 else np.nan
             cdi_acum, ipca_acum = calcular_macro_acumulado(df_macro, data_compra)
 
             dados_perf.append({
                 "Ativo": ticker, "Qtd": int(qtd_real),
-                "PM Real": float(pm_real), "Cotação": float(preco_atual),
-                "Investido": float(valor_investido_real), "Saldo": float(valor_atual),
-                "Var. Cota": float(var_cota), "Retorno Total": float(var_total),
-                "IPCA (Período)": float(ipca_acum), "CDI (Período)": float(cdi_acum)
+                "PM Real": pm_real, "Cotação": preco_atual,
+                "Investido": valor_investido_real, "Saldo": valor_atual,
+                "Var. Cota": var_cota, "Retorno Total": var_total,
+                "IPCA": ipca_acum, "CDI": cdi_acum
             })
 
-            graham = (22.5 * lpa * vpa) ** 0.5 if lpa > 0 and vpa > 0 else 0
-            margem_g = ((graham / preco_atual) - 1) * 100 if graham > 0 and preco_atual > 0 else None
-            bazin = divs_12m / 0.06 if divs_12m > 0 else 0
-            margem_b = ((bazin / preco_atual) - 1) * 100 if bazin > 0 and preco_atual > 0 else None
+            # VALUATION BLINDADO CONTRA ERROS DE TIPO (Uso do np.nan)
+            graham = (22.5 * lpa * vpa) ** 0.5 if lpa > 0 and vpa > 0 else np.nan
+            margem_g = ((graham / preco_atual) - 1) * 100 if pd.notna(graham) and preco_atual > 0 else np.nan
+            bazin = divs_12m / 0.06 if divs_12m > 0 else np.nan
+            margem_b = ((bazin / preco_atual) - 1) * 100 if pd.notna(bazin) and preco_atual > 0 else np.nan
 
-            # Emojis isolados para manter a coluna de margem puramente numérica
-            status_g = "🟢" if margem_g and margem_g > 0 else ("🔴" if margem_g else "-")
-            status_b = "🟢" if margem_b and margem_b > 0 else ("🔴" if margem_b else "-")
+            # Emojis isolados
+            status_g = "🟢" if pd.notna(margem_g) and margem_g > 0 else ("🔴" if pd.notna(margem_g) else "➖")
+            status_b = "🟢" if pd.notna(margem_b) and margem_b > 0 else ("🔴" if pd.notna(margem_b) else "➖")
 
             dados_val.append({
-                "Ativo": ticker, "Cotação": float(preco_atual),
-                "LPA": float(lpa), "VPA": float(vpa), "Div. 12m": float(divs_12m),
-                "Preço Graham": float(graham), "St. Graham": status_g, "Margem Graham": margem_g,
-                "Preço Bazin": float(bazin), "St. Bazin": status_b, "Margem Bazin": margem_b
+                "Ativo": ticker, "Cotação": preco_atual,
+                "LPA": lpa if lpa > 0 else np.nan, "VPA": vpa if vpa > 0 else np.nan, 
+                "Div. 12m": divs_12m if divs_12m > 0 else np.nan,
+                "Preço Graham": graham, "St. Graham": status_g, "Margem Graham": margem_g,
+                "Preço Bazin": bazin, "St. Bazin": status_b, "Margem Bazin": margem_b
             })
             progress_bar.progress((i + 1) / total_ativos)
         
+        # TRANSFORMAÇÃO E PROTEÇÃO DE TIPAGEM NO PANDAS
+        df_perf = pd.DataFrame(dados_perf)
+        col_num_perf = ["PM Real", "Cotação", "Investido", "Saldo", "Var. Cota", "Retorno Total", "IPCA", "CDI"]
+        df_perf[col_num_perf] = df_perf[col_num_perf].apply(pd.to_numeric, errors='coerce')
+
+        df_val = pd.DataFrame(dados_val)
+        col_num_val = ["Cotação", "LPA", "VPA", "Div. 12m", "Preço Graham", "Margem Graham", "Preço Bazin", "Margem Bazin"]
+        df_val[col_num_val] = df_val[col_num_val].apply(pd.to_numeric, errors='coerce')
+
         st.write("---")
         tab1, tab2 = st.tabs(["📈 Rentabilidade e Retorno Total", "🔎 Valuation (Graham & Bazin)"])
         
-        # MÁSCARAS DE COLUNA NATÍVAS DO STREAMLIT (Garante a ordenação e os 3 pontinhos!)
-        col_config_perf = {
+        # CONFIGURAÇÃO VISUAL NATIVA DO STREAMLIT
+        cfg_perf = {
             "PM Real": st.column_config.NumberColumn("PM Real", format="R$ %.2f"),
             "Cotação": st.column_config.NumberColumn("Cotação", format="R$ %.2f"),
             "Investido": st.column_config.NumberColumn("Investido", format="R$ %.2f"),
             "Saldo": st.column_config.NumberColumn("Saldo", format="R$ %.2f"),
             "Var. Cota": st.column_config.NumberColumn("Var. Cota", format="%.2f %%"),
             "Retorno Total": st.column_config.NumberColumn("Retorno Total", format="%.2f %%"),
-            "IPCA (Período)": st.column_config.NumberColumn("IPCA", format="%.2f %%"),
-            "CDI (Período)": st.column_config.NumberColumn("CDI", format="%.2f %%")
+            "IPCA": st.column_config.NumberColumn("IPCA", format="%.2f %%"),
+            "CDI": st.column_config.NumberColumn("CDI", format="%.2f %%")
         }
         
-        col_config_val = {
+        cfg_val = {
             "Cotação": st.column_config.NumberColumn("Cotação", format="R$ %.2f"),
             "LPA": st.column_config.NumberColumn("LPA", format="R$ %.2f"),
             "VPA": st.column_config.NumberColumn("VPA", format="R$ %.2f"),
@@ -187,9 +199,9 @@ if arquivo:
         }
 
         with tab1: 
-            st.dataframe(pd.DataFrame(dados_perf), use_container_width=True, hide_index=True, column_config=col_config_perf)
+            st.dataframe(df_perf, use_container_width=True, hide_index=True, column_config=cfg_perf)
         with tab2: 
-            st.dataframe(pd.DataFrame(dados_val), use_container_width=True, hide_index=True, column_config=col_config_val)
+            st.dataframe(df_val, use_container_width=True, hide_index=True, column_config=cfg_val)
 
 else:
-    st.info("Aguardando o upload do arquivo da B3 para iniciar.")
+    st.info("Aguardando o upload da planilha para iniciar as extrações.")
