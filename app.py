@@ -14,7 +14,7 @@ import plotly.express as px
 st.set_page_config(page_title="Terminal de Gestão CNPI", layout="wide")
 st.title("📊 Terminal de Gestão Profissional")
 
-if 'df_base' not in st.session_state: st.session_state.df_base = pd.DataFrame(columns=["Ativo", "Quantidade", "Preço Médio", "Data 1º Aporte", "Meses na Carteira"])
+if 'df_base' not in st.session_state: st.session_state.df_base = pd.DataFrame(columns=["Ativo", "Quantidade", "Preço Médio", "Data 1º Aporte"])
 if 'dados_mercado' not in st.session_state: st.session_state.dados_mercado = {}
 if 'df_simul' not in st.session_state: st.session_state.df_simul = pd.DataFrame()
 
@@ -77,7 +77,7 @@ def gerar_excel_premium(df_perf, df_val):
     df_v = df_val.fillna(0)
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         df_p.to_excel(writer, sheet_name='Rentabilidade', index=False)
-        df_v.to_excel(writer, sheet_name='Valuation', index=False)
+        df_v.to_excel(writer, sheet_name='Valuation_Bazin', index=False)
         ws = writer.sheets['Rentabilidade']
         chart = BarChart()
         chart.type = "col"
@@ -134,8 +134,7 @@ if arquivo and st.session_state.df_base.empty:
                     ativos_limpos.append({
                         "Ativo": t, "Quantidade": float(d['qtd']), 
                         "Preço Médio": float(d['valor'] / d['qtd']), 
-                        "Data 1º Aporte": data_aporte.date(),
-                        "Meses na Carteira": calcular_meses(data_aporte)
+                        "Data 1º Aporte": data_aporte.date()
                     })
             st.session_state.df_base = pd.DataFrame(ativos_limpos)
             st.rerun()
@@ -147,7 +146,7 @@ if arquivo and st.session_state.df_base.empty:
 # ==========================================
 if not st.session_state.df_base.empty:
     st.markdown("### 2. Parametrização da Carteira")
-    st.markdown("Ajuste os preços e o tempo investido em **meses**. As métricas retroativas se alinharão a essa configuração.")
+    st.markdown("Ajuste os preços médios e a **Data do 1º Aporte**. O sistema buscará o CDI e IPCA acumulados exatos a partir da data que você definir.")
     
     col1, col2 = st.columns([1, 1])
     with col1:
@@ -164,7 +163,7 @@ if not st.session_state.df_base.empty:
         novo_p = c3.number_input("PM (R$)", min_value=0.01)
         if st.button("➕ Adicionar Ativo"):
             if novo_t != "":
-                nova_linha = pd.DataFrame([{"Ativo": novo_t.upper(), "Quantidade": float(novo_q), "Preço Médio": float(novo_p), "Data 1º Aporte": pd.Timestamp.now().date(), "Meses na Carteira": 0}])
+                nova_linha = pd.DataFrame([{"Ativo": novo_t.upper(), "Quantidade": float(novo_q), "Preço Médio": float(novo_p), "Data 1º Aporte": pd.Timestamp.now().date()}])
                 st.session_state.df_base = pd.concat([st.session_state.df_base, nova_linha], ignore_index=True)
                 st.rerun()
 
@@ -174,8 +173,7 @@ if not st.session_state.df_base.empty:
             "Ativo": st.column_config.TextColumn(disabled=True),
             "Quantidade": st.column_config.NumberColumn(min_value=0.0),
             "Preço Médio": st.column_config.NumberColumn(format="R$ %.2f", min_value=0.0),
-            "Data 1º Aporte": st.column_config.DateColumn(format="DD/MM/YYYY"),
-            "Meses na Carteira": st.column_config.NumberColumn("Meses (Ajuste Aqui)", min_value=0, step=1)
+            "Data 1º Aporte": st.column_config.DateColumn("Data 1º Aporte (Ajuste Aqui)", format="DD/MM/YYYY")
         }
     )
 
@@ -192,15 +190,15 @@ if not st.session_state.df_base.empty:
         for i, row in df_editado.iterrows():
             ticker = str(row['Ativo']).strip().upper()
             try:
-                meses = int(row.get('Meses na Carteira', 0))
-                data_compra_estimada = pd.Timestamp.now() - pd.Timedelta(days=int(meses * 30.416))
+                # O CDI agora obedece estritamente a Data que o usuário editou
+                data_compra = pd.to_datetime(row['Data 1º Aporte']) if pd.notna(row['Data 1º Aporte']) else pd.Timestamp.now()
                 
                 acao = yf.Ticker(f"{ticker}.SA")
                 hist = acao.history(period="1d")
                 preco_atual = float(hist['Close'].iloc[-1]) if not hist.empty else float(row['Preço Médio'])
                 
                 divs = acao.dividends
-                divs_total = float(divs[divs.index.tz_localize(None) >= data_compra_estimada].sum() * row['Quantidade'])
+                divs_total = float(divs[divs.index.tz_localize(None) >= data_compra].sum() * row['Quantidade'])
                 divs_12m = float(divs[divs.index.tz_localize(None) >= data_12m].sum())
                 
                 info = acao.info
@@ -208,16 +206,18 @@ if not st.session_state.df_base.empty:
             except:
                 preco_atual, divs_total, divs_12m, lpa, vpa = float(row['Preço Médio']), 0.0, 0.0, 0.0, 0.0
 
-            cdi, ipca = calcular_macro_acumulado(df_macro, data_compra_estimada)
+            cdi, ipca = calcular_macro_acumulado(df_macro, data_compra)
+            meses_investido = calcular_meses(data_compra)
             
             dados_mercado[ticker] = {
                 "Qtd": float(row['Quantidade']), "PM": float(row['Preço Médio']),
-                "Preço Atual": preco_atual, "Div_Total": divs_total, "CDI": cdi, "IPCA": ipca, "Meses": meses
+                "Preço Atual": preco_atual, "Div_Total": divs_total, "CDI": cdi, "IPCA": ipca, "Meses": meses_investido
             }
 
+            # Prepara a base do simulador com um Yield exigido padrão de 6% (Editável pelo usuário depois)
             linhas_simul_iniciais.append({
                 "Ativo": ticker, "Cotação Atual": preco_atual, "VPA (Contábil)": vpa,
-                "LPA Projetado": lpa, "Div. Projetado (R$)": divs_12m
+                "LPA Projetado": lpa, "Div. Projetado (R$)": divs_12m, "Yield Desejado (%)": 6.0
             })
             progresso.progress((i + 1) / total)
             
@@ -226,7 +226,7 @@ if not st.session_state.df_base.empty:
         st.success("Dados de Mercado Sincronizados!")
 
     # ==========================================
-    # 4. PAINEL DE RELATÓRIOS E GRÁFICOS
+    # 4. PAINEL DE RELATÓRIOS (4 ABAS)
     # ==========================================
     if st.session_state.dados_mercado:
         linhas_perf = []
@@ -248,17 +248,16 @@ if not st.session_state.df_base.empty:
 
         st.write("---")
         st.download_button(
-            label="📥 Baixar Relatório em Excel (Com Gráficos Nativos)",
+            label="📥 Baixar Relatório em Excel",
             data=gerar_excel_premium(df_perf_final, st.session_state.df_simul),
             file_name="Analise_CNPI_Carteira.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
-        # Divisão em 4 abas para despoluir a visualização
         tab1, tab2, tab3, tab4 = st.tabs([
             "📈 Rentabilidade e YOC", 
-            "💰 Valuation (Bazin - Renda)", 
-            "🏢 Valuation (Graham - Valor)", 
+            "💰 Método Bazin (Renda)", 
+            "🏢 Método Graham (Valor)", 
             "📊 Gráficos Interativos"
         ])
         
@@ -275,39 +274,41 @@ if not st.session_state.df_base.empty:
                 "CDI Acum.": st.column_config.NumberColumn(format="%.2f %%")
             })
 
-        # --- ABA 2: BAZIN (Foco em Renda / Preço Teto) ---
+        # --- ABA 2: BAZIN ---
         with tab2:
             st.markdown("### Método Décio Bazin (Foco em Renda Passiva)")
-            yield_desejado = st.number_input("Taxa de Risco - Yield Desejado (%):", value=6.0, min_value=0.1, step=0.5) / 100.0
+            st.markdown("Edite o **Dividendo Projetado (R$)** ou o **Yield Desejado (%)** por ativo. O Preço Teto calculará automaticamente.")
             
-            # Filtramos as colunas úteis apenas para Bazin
-            df_bazin_view = st.session_state.df_simul[["Ativo", "Cotação Atual", "Div. Projetado (R$)"]].copy()
+            df_bazin_view = st.session_state.df_simul[["Ativo", "Cotação Atual", "Div. Projetado (R$)", "Yield Desejado (%)"]].copy()
             df_bazin_editado = st.data_editor(
                 df_bazin_view, use_container_width=True, hide_index=True,
                 disabled=["Ativo", "Cotação Atual"],
                 column_config={
                     "Cotação Atual": st.column_config.NumberColumn(format="R$ %.2f"),
-                    "Div. Projetado (R$)": st.column_config.NumberColumn("Div. Projetado (Editar)", format="R$ %.2f")
+                    "Div. Projetado (R$)": st.column_config.NumberColumn("Div. Projetado (R$)", format="R$ %.2f"),
+                    "Yield Desejado (%)": st.column_config.NumberColumn("Yield Exigido (%)", format="%.2f %%")
                 }
             )
             
             linhas_bazin = []
             for _, row in df_bazin_editado.iterrows():
-                t, cotacao, div_proj = row['Ativo'], row['Cotação Atual'], row['Div. Projetado (R$)']
-                bazin = div_proj / yield_desejado if div_proj > 0 else np.nan
+                t, cotacao = row['Ativo'], row['Cotação Atual']
+                div_proj, yield_req = row['Div. Projetado (R$)'], (row['Yield Desejado (%)'] / 100.0)
+                
+                bazin = div_proj / yield_req if (div_proj > 0 and yield_req > 0) else np.nan
                 margem_b = ((bazin / cotacao) - 1) * 100 if (pd.notna(bazin) and cotacao > 0) else np.nan
-                linhas_bazin.append({"Ativo": t, "Cotação Atual": cotacao, "Valor Teto (Bazin)": bazin, "Margem de Segurança": margem_b})
+                linhas_bazin.append({"Ativo": t, "Cotação Atual": cotacao, "Preço Teto (Bazin)": bazin, "Margem de Segurança": margem_b})
                 
             st.dataframe(pd.DataFrame(linhas_bazin), use_container_width=True, hide_index=True, column_config={
                 "Cotação Atual": st.column_config.NumberColumn(format="R$ %.2f"),
-                "Valor Teto (Bazin)": st.column_config.NumberColumn(format="R$ %.2f"),
+                "Preço Teto (Bazin)": st.column_config.NumberColumn(format="R$ %.2f"),
                 "Margem de Segurança": st.column_config.NumberColumn(format="%.2f %%")
             })
 
-        # --- ABA 3: GRAHAM (Foco em Patrimônio e Lucro) ---
+        # --- ABA 3: GRAHAM ---
         with tab3:
             st.markdown("### Método Benjamin Graham (Valor Intrínseco)")
-            st.warning("Nota de Gestão: O método de Graham não se aplica a FIIs nem a empresas com prejuízo contábil.")
+            st.warning("⚠️ O método de Graham não se aplica a FIIs ou a empresas com prejuízo contábil (VPA ou LPA negativos).")
             
             df_graham_view = st.session_state.df_simul[["Ativo", "Cotação Atual", "VPA (Contábil)", "LPA Projetado"]].copy()
             df_graham_editado = st.data_editor(
@@ -324,42 +325,43 @@ if not st.session_state.df_base.empty:
             for _, row in df_graham_editado.iterrows():
                 t, cotacao = row['Ativo'], row['Cotação Atual']
                 vpa, lpa_proj = row['VPA (Contábil)'], row['LPA Projetado']
+                
                 graham = (22.5 * lpa_proj * vpa) ** 0.5 if (lpa_proj > 0 and vpa > 0) else np.nan
                 margem_g = ((graham / cotacao) - 1) * 100 if (pd.notna(graham) and cotacao > 0) else np.nan
-                linhas_graham.append({"Ativo": t, "Cotação Atual": cotacao, "Valor Justo (Graham)": graham, "Margem de Segurança": margem_g})
+                linhas_graham.append({"Ativo": t, "Cotação Atual": cotacao, "Preço Justo (Graham)": graham, "Margem de Segurança": margem_g})
                 
             st.dataframe(pd.DataFrame(linhas_graham), use_container_width=True, hide_index=True, column_config={
                 "Cotação Atual": st.column_config.NumberColumn(format="R$ %.2f"),
-                "Valor Justo (Graham)": st.column_config.NumberColumn(format="R$ %.2f"),
+                "Preço Justo (Graham)": st.column_config.NumberColumn(format="R$ %.2f"),
                 "Margem de Segurança": st.column_config.NumberColumn(format="%.2f %%")
             })
 
-        # --- ABA 4: GRÁFICOS INTERATIVOS COM PLOTLY ---
+        # --- ABA 4: GRÁFICOS (PLOTLY Engine) ---
         with tab4:
-            st.markdown("### Análise Comparativa (Plotly Engine)")
+            st.markdown("### Análise Comparativa Visual")
             
             todos_ativos = df_perf_final['Ativo'].tolist()
-            ativos_selecionados = st.multiselect("Selecione os ativos para o gráfico:", todos_ativos, default=todos_ativos[:6])
+            ativos_selecionados = st.multiselect("Selecione os ativos para exibir nos gráficos:", todos_ativos, default=todos_ativos[:6])
             
             if ativos_selecionados:
                 df_grafico = df_perf_final[df_perf_final['Ativo'].isin(ativos_selecionados)]
                 
-                # Gráfico 1: Evolução vs Benchmarks
+                # Gráfico 1: Rentabilidade com Labels e Eixo %
                 st.markdown("#### Retorno Total vs CDI vs IPCA")
                 df_melt = df_grafico.melt(id_vars=["Ativo"], 
                                           value_vars=["Evolução c/ Div", "CDI Acum.", "IPCA Acum."],
-                                          var_name="Indicador", value_name="Rentabilidade (%)")
+                                          var_name="Indicador", value_name="Rentabilidade")
                 
-                fig1 = px.bar(df_melt, x="Ativo", y="Rentabilidade (%)", color="Indicador", barmode="group", text="Rentabilidade (%)")
+                fig1 = px.bar(df_melt, x="Ativo", y="Rentabilidade", color="Indicador", barmode="group", text="Rentabilidade")
                 fig1.update_traces(texttemplate='%{text:.2f}%', textposition='outside')
-                fig1.update_layout(yaxis_ticksuffix=" %", uniformtext_minsize=8, uniformtext_mode='hide')
+                fig1.update_layout(yaxis_ticksuffix=" %", uniformtext_minsize=8, uniformtext_mode='hide', margin=dict(t=30))
                 st.plotly_chart(fig1, use_container_width=True)
                 
-                # Gráfico 2: YOC
-                st.markdown("#### Yield on Cost (Geração de Caixa Base)")
+                # Gráfico 2: DY On Cost
+                st.markdown("#### Máquina de Geração de Caixa (Yield on Cost)")
                 fig2 = px.bar(df_grafico, x="Ativo", y="DY on Cost", text="DY on Cost")
                 fig2.update_traces(marker_color='#2ecc71', texttemplate='%{text:.2f}%', textposition='outside')
-                fig2.update_layout(yaxis_ticksuffix=" %")
+                fig2.update_layout(yaxis_ticksuffix=" %", margin=dict(t=30))
                 st.plotly_chart(fig2, use_container_width=True)
             else:
-                st.info("Selecione os ativos na caixa acima.")
+                st.info("Selecione os ativos no menu acima.")
