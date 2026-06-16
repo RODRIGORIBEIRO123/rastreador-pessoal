@@ -11,7 +11,6 @@ import re
 st.set_page_config(page_title="Terminal de Gestão CNPI", layout="wide")
 st.title("📊 Terminal de Gestão Profissional")
 
-# Memória do aplicativo para não apagar os dados ao clicar nos botões
 if 'df_base' not in st.session_state: st.session_state.df_base = pd.DataFrame(columns=["Ativo", "Quantidade", "Preço Médio", "Data 1º Aporte"])
 if 'dados_mercado' not in st.session_state: st.session_state.dados_mercado = {}
 if 'df_simul' not in st.session_state: st.session_state.df_simul = pd.DataFrame()
@@ -42,14 +41,26 @@ def ignorar_ativo(ticker):
     return False
 
 # ==========================================
-# 2. UPLOAD E LEITURA (APENAS 1 VEZ)
+# 2. UPLOAD E LEITURA (MOTOR BLINDADO)
 # ==========================================
 st.sidebar.header("1. Upload da B3")
 arquivo = st.sidebar.file_uploader("Arquivo Negociação B3", type=["xlsx", "csv"])
 
 if arquivo and st.session_state.df_base.empty:
     with st.spinner("Processando histórico..."):
-        df = pd.read_csv(arquivo, sep=';', encoding='latin1') if arquivo.name.endswith('.csv') else pd.read_excel(arquivo)
+        # Leitor inteligente que aceita CSV com Vírgula ou Ponto-e-Vírgula
+        if arquivo.name.endswith('.csv'):
+            try:
+                df = pd.read_csv(arquivo, sep=';', encoding='latin1')
+                if 'Data do Negócio' not in df.columns:
+                    arquivo.seek(0)
+                    df = pd.read_csv(arquivo, sep=',', encoding='utf-8')
+            except:
+                arquivo.seek(0)
+                df = pd.read_csv(arquivo, sep=',', encoding='utf-8')
+        else:
+            df = pd.read_excel(arquivo)
+            
         df.columns = df.columns.str.strip()
         df['Data do Negócio'] = pd.to_datetime(df['Data do Negócio'], format='%d/%m/%Y', errors='coerce')
         df['Preço'] = df['Preço'].astype(str).replace({r'R\$': '', r'\.': '', ',': '.'}, regex=True).astype(float)
@@ -86,18 +97,18 @@ if arquivo and st.session_state.df_base.empty:
         st.rerun()
 
 # ==========================================
-# 3. INTERFACE DE EDIÇÃO MANUAL (BOTÕES EXPLÍCITOS)
+# 3. INTERFACE DE EDIÇÃO MANUAL
 # ==========================================
 if not st.session_state.df_base.empty:
     st.markdown("### 2. Edição Manual da Carteira")
-    st.markdown("Se faltar algum ativo ou sobrar lixo da B3, utilize os botões vermelhos e verdes abaixo para limpar a sua lista (Temos de chegar nos 47 ativos). Pode também corrigir o PM diretamente na tabela.")
+    st.markdown("Ajuste as quantidades, adicione os ativos faltantes ou exclua o que já não possui.")
     
     col1, col2 = st.columns([1, 1])
     
     with col1:
         st.error("🗑️ EXCLUIR ATIVO")
         lista_ativos = [""] + sorted(st.session_state.df_base["Ativo"].tolist())
-        ticker_del = st.selectbox("Selecione o lixo para remover:", lista_ativos)
+        ticker_del = st.selectbox("Selecione o ativo para remover:", lista_ativos)
         if st.button("Remover Ativo Selecionado"):
             if ticker_del != "":
                 st.session_state.df_base = st.session_state.df_base[st.session_state.df_base["Ativo"] != ticker_del]
@@ -199,10 +210,9 @@ if not st.session_state.df_base.empty:
                 "CDI Acum.": st.column_config.NumberColumn(format="%.2f %%")
             })
 
-        # ABA 2 (O BAZIN SIMULADO E PERSONALIZADO)
+        # ABA 2
         with tab2:
             st.markdown("### Simulador de Aportes")
-            # CAMPO DE DIVIDENDO DESEJADO (AQUI ESTÁ A CHAVE PARA O BAZIN!)
             yield_desejado = st.number_input("Digite o seu Dividend Yield Desejado (% Bazin):", value=6.0, min_value=0.1, step=0.5) / 100.0
             
             st.markdown("Altere o LPA ou os Dividendos abaixo e veja as margens reagirem instantaneamente:")
@@ -223,7 +233,6 @@ if not st.session_state.df_base.empty:
                 cotacao, vpa = row['Cotação Atual'], row['VPA (Contábil)']
                 lpa_proj, div_proj = row['LPA Projetado'], row['Div. Projetado (R$)']
                 
-                # Matemática Rigorosa
                 graham = (22.5 * lpa_proj * vpa) ** 0.5 if (lpa_proj > 0 and vpa > 0) else np.nan
                 margem_g = ((graham / cotacao) - 1) * 100 if (pd.notna(graham) and cotacao > 0) else np.nan
                 bazin = div_proj / yield_desejado if div_proj > 0 else np.nan
