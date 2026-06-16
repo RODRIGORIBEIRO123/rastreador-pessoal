@@ -9,14 +9,24 @@ st.set_page_config(page_title="Terminal de Gestão | CNPI", layout="wide")
 st.title("📊 Terminal de Gestão Híbrido")
 st.markdown("Use a planilha da B3 para puxar o histórico e ajuste a sua carteira como se estivesse no Excel.")
 
-# --- FUNÇÕES ÚTEIS ---
+# --- FUNÇÕES ÚTEIS (FORMATAÇÃO RIGOROSA BRL) ---
 def formatar_brl(valor):
-    if pd.isna(valor) or valor == 0: return "N/A"
-    return f"R$ {valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    try:
+        valor = float(valor)
+        if pd.isna(valor): 
+            return "R$ 0,00"
+        return f"R$ {valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    except:
+        return "R$ 0,00"
 
 def formatar_pct(valor):
-    if pd.isna(valor): return "0,00%"
-    return f"{valor:,.2f}%".replace(".", ",")
+    try:
+        valor = float(valor)
+        if pd.isna(valor): 
+            return "0,00%"
+        return f"{valor:,.2f}%".replace(".", ",")
+    except:
+        return "0,00%"
 
 def eh_opcao_ou_futuro(ticker):
     if pd.isna(ticker): return True
@@ -80,7 +90,7 @@ if arquivo:
 
         carteira_ativa = {k: v for k, v in posicoes.items() if v['quantidade'] > 0}
         
-    # Prepara o DataFrame base para edição (A correção da Data entrou aqui)
+    # Prepara o DataFrame base para edição
     dados_edicao = []
     for ticker, dados in sorted(carteira_ativa.items(), key=lambda x: x[1]['valor_investido'], reverse=True):
         pm_estimado = dados['valor_investido'] / dados['quantidade'] if dados['quantidade'] > 0 else 0
@@ -94,27 +104,26 @@ if arquivo:
         })
         
     df_edicao = pd.DataFrame(dados_edicao)
-    
-    # Blinda o Pandas forçando a coluna a ser entendida como Data para não estourar a API do Streamlit
     if not df_edicao.empty:
         df_edicao['Data 1º Aporte'] = pd.to_datetime(df_edicao['Data 1º Aporte']).dt.date
 
     st.write("---")
     st.subheader("2. Edição Livre da Carteira")
     st.markdown("""
-    * **Para Excluir:** Selecione a caixinha à esquerda do ativo que você não tem mais e aperte a tecla `Delete` (ou clique na lixeira).
-    * **Para Adicionar:** Role até a última linha da tabela e clique no espaço em branco ou no botão de `+`.
-    * **Para Corrigir:** Digite a quantidade e o PM exatos por cima dos números antigos.
+    * **Para Excluir:** Selecione a caixinha à esquerda do ativo e aperte a tecla `Delete` (ou clique na lixeira).
+    * **Para Adicionar:** Role até a última linha e clique no botão de `+`.
+    * **Para Corrigir:** Digite a quantidade e o PM exatos.
     """)
     
-    # A MÁGICA: num_rows="dynamic" permite adicionar e excluir linhas livremente
+    # A Tabela Editável com formatação financeira ativada no visual
     df_editado = st.data_editor(
         df_edicao, 
         use_container_width=True,
         hide_index=False,
         num_rows="dynamic",
         column_config={
-            "Data 1º Aporte": st.column_config.DateColumn("Data 1º Aporte", format="DD/MM/YYYY")
+            "Data 1º Aporte": st.column_config.DateColumn("Data 1º Aporte", format="DD/MM/YYYY"),
+            "Preço Médio": st.column_config.NumberColumn("Preço Médio", format="R$ %.2f", min_value=0.0)
         }
     )
 
@@ -128,7 +137,6 @@ if arquivo:
         data_12m_atras = pd.Timestamp.now() - pd.DateOffset(years=1)
         
         for i, row in df_editado.iterrows():
-            # Proteções contra linhas em branco adicionadas acidentalmente pelo usuário
             ticker = str(row.get("Ativo", "")).strip().upper()
             if not ticker or ticker == 'NAN' or ticker == 'NONE':
                 continue
@@ -171,6 +179,7 @@ if arquivo:
             var_total = (((valor_atual + total_dividendos) / valor_investido_real) - 1) * 100 if valor_investido_real > 0 else 0
             cdi_acum, ipca_acum = calcular_macro_acumulado(df_macro, data_compra)
 
+            # Relatório 1: Performance
             dados_perf.append({
                 "Ativo": ticker,
                 "Qtd": int(qtd_real),
@@ -184,11 +193,14 @@ if arquivo:
                 "CDI (Período)": formatar_pct(cdi_acum)
             })
 
+            # Matemática Graham e Bazin
             graham = (22.5 * lpa * vpa) ** 0.5 if lpa > 0 and vpa > 0 else 0
             margem_g = (graham / preco_atual) - 1 if graham > 0 and preco_atual > 0 else 0
+            
             bazin = divs_12m / 0.06 if divs_12m > 0 else 0
             margem_b = (bazin / preco_atual) - 1 if bazin > 0 and preco_atual > 0 else 0
 
+            # Relatório 2: Valuation
             dados_val.append({
                 "Ativo": ticker,
                 "Cotação": formatar_brl(preco_atual),
@@ -196,9 +208,9 @@ if arquivo:
                 "VPA": formatar_brl(vpa),
                 "Div. 12m": formatar_brl(divs_12m),
                 "Preço Graham": formatar_brl(graham),
-                "Margem Graham": f"{'🟢' if margem_g > 0 else '🔴'} {formatar_pct(margem_g * 100)}" if graham > 0 else "N/A",
+                "Margem Graham": f"{'🟢' if margem_g > 0 else '🔴'} {formatar_pct(margem_g * 100)}" if graham > 0 else "-",
                 "Preço Bazin": formatar_brl(bazin),
-                "Margem Bazin": f"{'🟢' if margem_b > 0 else '🔴'} {formatar_pct(margem_b * 100)}" if bazin > 0 else "N/A"
+                "Margem Bazin": f"{'🟢' if margem_b > 0 else '🔴'} {formatar_pct(margem_b * 100)}" if bazin > 0 else "-"
             })
             
             progress_bar.progress((i + 1) / total_ativos)
