@@ -13,8 +13,7 @@ from openpyxl.chart import BarChart, Reference
 st.set_page_config(page_title="Terminal de Gestão CNPI", layout="wide")
 st.title("📊 Terminal de Gestão Profissional")
 
-# Memória do aplicativo
-if 'df_base' not in st.session_state: st.session_state.df_base = pd.DataFrame(columns=["Ativo", "Quantidade", "Preço Médio", "Data 1º Aporte"])
+if 'df_base' not in st.session_state: st.session_state.df_base = pd.DataFrame(columns=["Ativo", "Quantidade", "Preço Médio", "Data 1º Aporte", "Meses na Carteira"])
 if 'dados_mercado' not in st.session_state: st.session_state.dados_mercado = {}
 if 'df_simul' not in st.session_state: st.session_state.df_simul = pd.DataFrame()
 
@@ -38,7 +37,7 @@ def calcular_macro_acumulado(df_macro, data_inicio):
 def calcular_meses(data_inicio):
     if pd.isna(data_inicio): return 0
     hoje = pd.Timestamp.now()
-    return (hoje.year - data_inicio.year) * 12 + (hoje.month - data_inicio.month)
+    return int((hoje.year - data_inicio.year) * 12 + (hoje.month - data_inicio.month))
 
 def ignorar_ativo(ticker):
     if pd.isna(ticker): return True
@@ -72,11 +71,10 @@ def ler_arquivo_b3(arquivo_upload):
     return df
 
 # ==========================================
-# GERAÇÃO DE EXCEL COM GRÁFICO NATIVO (OPENPYXL)
+# EXPORTAÇÃO PREMIUM (EXCEL COM GRÁFICO)
 # ==========================================
 def gerar_excel_premium(df_perf, df_val):
     output = io.BytesIO()
-    # Preenche NaN com 0 para o Excel não quebrar a matemática do gráfico
     df_p = df_perf.fillna(0)
     df_v = df_val.fillna(0)
     
@@ -84,25 +82,22 @@ def gerar_excel_premium(df_perf, df_val):
         df_p.to_excel(writer, sheet_name='Rentabilidade', index=False)
         df_v.to_excel(writer, sheet_name='Valuation', index=False)
         
-        # Desenha o gráfico nativo na aba de Rentabilidade
         ws = writer.sheets['Rentabilidade']
         chart = BarChart()
         chart.type = "col"
         chart.style = 13
-        chart.title = "Retorno Total vs Benchmarks (IPCA e CDI)"
-        chart.y_axis.title = "Rentabilidade Acumulada (%)"
-        chart.x_axis.title = "Ativos da Carteira"
+        chart.title = "Retorno Total vs CDI e IPCA"
+        chart.y_axis.title = "Rentabilidade (%)"
         
-        # Colunas: Ativo (1), Qtd (2), PM (3), Atual (4), Meses (5), Var s/ Div (6), Var c/ Div (7), IPCA (8), CDI (9)
-        dados_grafico = Reference(ws, min_col=7, min_row=1, max_col=9, max_row=len(df_p)+1)
+        # O gráfico agora mapeia corretamente as colunas atualizadas (Índices: Evol c/ Div, IPCA, CDI)
+        dados_grafico = Reference(ws, min_col=9, min_row=1, max_col=11, max_row=len(df_p)+1)
         categorias = Reference(ws, min_col=1, min_row=2, max_row=len(df_p)+1)
         
         chart.add_data(dados_grafico, titles_from_data=True)
         chart.set_categories(categorias)
-        chart.height = 14
-        chart.width = 25
-        
-        ws.add_chart(chart, "L2") # Insere o gráfico ao lado da tabela
+        chart.height = 15
+        chart.width = 30
+        ws.add_chart(chart, "M2")
     return output.getvalue()
 
 # ==========================================
@@ -142,10 +137,12 @@ if arquivo and st.session_state.df_base.empty:
             ativos_limpos = []
             for t, d in posicoes.items():
                 if d['qtd'] > 0:
+                    data_aporte = d['primeiro_aporte'] if pd.notna(d['primeiro_aporte']) else pd.Timestamp.now()
                     ativos_limpos.append({
                         "Ativo": t, "Quantidade": float(d['qtd']), 
                         "Preço Médio": float(d['valor'] / d['qtd']), 
-                        "Data 1º Aporte": d['primeiro_aporte'].date() if pd.notna(d['primeiro_aporte']) else pd.Timestamp.now().date()
+                        "Data 1º Aporte": data_aporte.date(),
+                        "Meses na Carteira": calcular_meses(data_aporte)
                     })
             st.session_state.df_base = pd.DataFrame(ativos_limpos)
             st.rerun()
@@ -156,27 +153,25 @@ if arquivo and st.session_state.df_base.empty:
 # 3. INTERFACE DE EDIÇÃO MANUAL
 # ==========================================
 if not st.session_state.df_base.empty:
-    st.markdown("### 2. Edição Manual da Carteira")
-    st.markdown("Ajuste as quantidades e preços médios na tabela. Salva automaticamente.")
+    st.markdown("### 2. Parametrização da Carteira")
+    st.markdown("Ajuste as quantidades, os preços e **os meses que o ativo está com você**. O sistema fará a matemática retroativa com base nos meses que definir.")
     
     col1, col2 = st.columns([1, 1])
     with col1:
-        st.error("🗑️ EXCLUIR ATIVO")
         lista_ativos = [""] + sorted(st.session_state.df_base["Ativo"].tolist())
         ticker_del = st.selectbox("Selecione o ativo para remover:", lista_ativos)
-        if st.button("Remover Ativo"):
+        if st.button("🗑️ Remover Ativo"):
             if ticker_del != "":
                 st.session_state.df_base = st.session_state.df_base[st.session_state.df_base["Ativo"] != ticker_del]
                 st.rerun()
     with col2:
-        st.success("➕ INCLUIR NOVO ATIVO")
         c1, c2, c3 = st.columns(3)
         novo_t = c1.text_input("Ticker (Ex: BBAS3)")
         novo_q = c2.number_input("Qtd", min_value=1)
         novo_p = c3.number_input("PM (R$)", min_value=0.01)
-        if st.button("Adicionar Ativo"):
+        if st.button("➕ Adicionar Ativo"):
             if novo_t != "":
-                nova_linha = pd.DataFrame([{"Ativo": novo_t.upper(), "Quantidade": float(novo_q), "Preço Médio": float(novo_p), "Data 1º Aporte": pd.Timestamp.now().date()}])
+                nova_linha = pd.DataFrame([{"Ativo": novo_t.upper(), "Quantidade": float(novo_q), "Preço Médio": float(novo_p), "Data 1º Aporte": pd.Timestamp.now().date(), "Meses na Carteira": 0}])
                 st.session_state.df_base = pd.concat([st.session_state.df_base, nova_linha], ignore_index=True)
                 st.rerun()
 
@@ -186,7 +181,8 @@ if not st.session_state.df_base.empty:
             "Ativo": st.column_config.TextColumn(disabled=True),
             "Quantidade": st.column_config.NumberColumn(min_value=0.0),
             "Preço Médio": st.column_config.NumberColumn(format="R$ %.2f", min_value=0.0),
-            "Data 1º Aporte": st.column_config.DateColumn(format="DD/MM/YYYY")
+            "Data 1º Aporte": st.column_config.DateColumn(format="DD/MM/YYYY"),
+            "Meses na Carteira": st.column_config.NumberColumn("Meses (Ajuste Aqui)", min_value=0, step=1)
         }
     )
 
@@ -203,13 +199,16 @@ if not st.session_state.df_base.empty:
         for i, row in df_editado.iterrows():
             ticker = str(row['Ativo']).strip().upper()
             try:
+                # Ajuste Temporal Retroativo (Magia do Gestor)
+                meses = int(row.get('Meses na Carteira', 0))
+                data_compra_estimada = pd.Timestamp.now() - pd.Timedelta(days=int(meses * 30.416))
+                
                 acao = yf.Ticker(f"{ticker}.SA")
                 hist = acao.history(period="1d")
                 preco_atual = float(hist['Close'].iloc[-1]) if not hist.empty else float(row['Preço Médio'])
                 
                 divs = acao.dividends
-                data_compra = pd.to_datetime(row['Data 1º Aporte'])
-                divs_total = float(divs[divs.index.tz_localize(None) >= data_compra].sum() * row['Quantidade'])
+                divs_total = float(divs[divs.index.tz_localize(None) >= data_compra_estimada].sum() * row['Quantidade'])
                 divs_12m = float(divs[divs.index.tz_localize(None) >= data_12m].sum())
                 
                 info = acao.info
@@ -217,12 +216,11 @@ if not st.session_state.df_base.empty:
             except:
                 preco_atual, divs_total, divs_12m, lpa, vpa = float(row['Preço Médio']), 0.0, 0.0, 0.0, 0.0
 
-            cdi, ipca = calcular_macro_acumulado(df_macro, data_compra)
-            meses_investido = calcular_meses(data_compra)
+            cdi, ipca = calcular_macro_acumulado(df_macro, data_compra_estimada)
             
             dados_mercado[ticker] = {
                 "Qtd": float(row['Quantidade']), "PM": float(row['Preço Médio']),
-                "Preço Atual": preco_atual, "Div_Total": divs_total, "CDI": cdi, "IPCA": ipca, "Meses": meses_investido
+                "Preço Atual": preco_atual, "Div_Total": divs_total, "CDI": cdi, "IPCA": ipca, "Meses": meses
             }
 
             linhas_simul_iniciais.append({
@@ -246,32 +244,34 @@ if not st.session_state.df_base.empty:
             saldo = dm['Qtd'] * dm['Preço Atual']
             var_s_div = ((saldo / investido) - 1) * 100 if investido > 0 else np.nan
             var_c_div = (((saldo + dm['Div_Total']) / investido) - 1) * 100 if investido > 0 else np.nan
+            yoc = (dm['Div_Total'] / investido) * 100 if investido > 0 else np.nan
             
             linhas_perf.append({
                 "Ativo": t, "Qtd": int(dm['Qtd']), "Preço Médio": dm['PM'], "Preço Atual": dm['Preço Atual'],
-                "Tempo (Meses)": int(dm['Meses']),
+                "Meses": int(dm['Meses']),
+                "Total Div. (R$)": dm['Div_Total'], "DY on Cost": yoc,
                 "Evolução s/ Div": var_s_div, "Evolução c/ Div": var_c_div,
                 "IPCA Acum.": dm['IPCA'], "CDI Acum.": dm['CDI']
             })
         df_perf_final = pd.DataFrame(linhas_perf)
 
         st.write("---")
-        # BOTÃO DE EXPORTAÇÃO PREMIUM (Fica acima das abas)
         st.download_button(
-            label="📥 Baixar Análise em Excel (Com Gráfico)",
+            label="📥 Baixar Análise em Excel (Com Gráficos)",
             data=gerar_excel_premium(df_perf_final, st.session_state.df_simul),
             file_name="Analise_CNPI_Carteira.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
-        tab1, tab2, tab3 = st.tabs(["📈 Rentabilidade", "🔎 Simulador Valuation", "📊 Gráficos Interativos"])
+        tab1, tab2, tab3 = st.tabs(["📈 Rentabilidade e YOC", "🔎 Simulador Valuation", "📊 Gráficos de Performance"])
         
         # --- ABA 1: RENTABILIDADE ---
         with tab1:
             st.dataframe(df_perf_final, use_container_width=True, hide_index=True, column_config={
                 "Preço Médio": st.column_config.NumberColumn(format="R$ %.2f"),
                 "Preço Atual": st.column_config.NumberColumn(format="R$ %.2f"),
-                "Tempo (Meses)": st.column_config.NumberColumn(format="%d"),
+                "Total Div. (R$)": st.column_config.NumberColumn(format="R$ %.2f"),
+                "DY on Cost": st.column_config.NumberColumn(format="%.2f %%"),
                 "Evolução s/ Div": st.column_config.NumberColumn(format="%.2f %%"),
                 "Evolução c/ Div": st.column_config.NumberColumn(format="%.2f %%"),
                 "IPCA Acum.": st.column_config.NumberColumn(format="%.2f %%"),
@@ -313,21 +313,22 @@ if not st.session_state.df_base.empty:
                 "Margem Bazin": st.column_config.NumberColumn("Margem Bazin", format="%.2f %%")
             })
 
-        # --- ABA 3: GRÁFICOS INTERATIVOS ---
+        # --- ABA 3: GRÁFICOS INTELIGENTES ---
         with tab3:
-            st.markdown("### Comparativo de Performance")
-            st.markdown("Selecione os ativos que deseja cruzar com os índices de referência.")
+            st.markdown("### Análise Comparativa (Retorno Total vs Benchmarks)")
+            st.markdown("O gráfico abaixo limpa o ruído visual e mostra exatamente se o seu carrego (com dividendos) bateu a inflação e a Selic.")
             
             todos_ativos = df_perf_final['Ativo'].tolist()
-            # Pré-seleciona os 5 primeiros como demonstração
-            ativos_selecionados = st.multiselect("Selecione os Ativos:", todos_ativos, default=todos_ativos[:5])
+            ativos_selecionados = st.multiselect("Filtre os ativos para analisar:", todos_ativos, default=todos_ativos[:10])
             
             if ativos_selecionados:
-                # Filtra os dados
                 df_grafico = df_perf_final[df_perf_final['Ativo'].isin(ativos_selecionados)]
-                # Prepara o formato para o st.bar_chart (Index = Eixo X, Colunas = Barras)
-                df_grafico = df_grafico.set_index("Ativo")[["Evolução c/ Div", "CDI Acum.", "IPCA Acum."]]
+                # Prepara os dados para o st.bar_chart não bugar
+                df_chart_data = df_grafico.set_index("Ativo")[["Evolução c/ Div", "CDI Acum.", "IPCA Acum."]]
+                st.bar_chart(df_chart_data, use_container_width=True)
                 
-                st.bar_chart(df_grafico, use_container_width=True)
+                st.markdown("### Máquina de Geração de Caixa (YOC)")
+                df_chart_yoc = df_grafico.set_index("Ativo")[["DY on Cost"]]
+                st.bar_chart(df_chart_yoc, use_container_width=True, color="#2ecc71")
             else:
-                st.info("Selecione pelo menos um ativo para gerar o gráfico.")
+                st.info("Selecione os ativos na caixa acima.")
