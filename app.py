@@ -80,20 +80,24 @@ if arquivo:
 
         carteira_ativa = {k: v for k, v in posicoes.items() if v['quantidade'] > 0}
         
-    # Prepara o DataFrame base para edição
+    # Prepara o DataFrame base para edição (A correção da Data entrou aqui)
     dados_edicao = []
     for ticker, dados in sorted(carteira_ativa.items(), key=lambda x: x[1]['valor_investido'], reverse=True):
         pm_estimado = dados['valor_investido'] / dados['quantidade'] if dados['quantidade'] > 0 else 0
-        data_str = dados['primeira_compra'].strftime('%Y-%m-%d') if pd.notna(dados['primeira_compra']) else pd.Timestamp.now().strftime('%Y-%m-%d')
+        data_pura = dados['primeira_compra'] if pd.notna(dados['primeira_compra']) else pd.Timestamp.now()
         
         dados_edicao.append({
             "Ativo": ticker,
             "Quantidade": int(dados['quantidade']),
             "Preço Médio": float(round(pm_estimado, 2)),
-            "Data 1º Aporte": data_str
+            "Data 1º Aporte": data_pura
         })
         
     df_edicao = pd.DataFrame(dados_edicao)
+    
+    # Blinda o Pandas forçando a coluna a ser entendida como Data para não estourar a API do Streamlit
+    if not df_edicao.empty:
+        df_edicao['Data 1º Aporte'] = pd.to_datetime(df_edicao['Data 1º Aporte']).dt.date
 
     st.write("---")
     st.subheader("2. Edição Livre da Carteira")
@@ -107,10 +111,10 @@ if arquivo:
     df_editado = st.data_editor(
         df_edicao, 
         use_container_width=True,
-        hide_index=False, # Mostrar o índice ajuda a selecionar a linha para deletar
+        hide_index=False,
         num_rows="dynamic",
         column_config={
-            "Data 1º Aporte": st.column_config.DateColumn("Data 1º Aporte (AAAA-MM-DD)", format="YYYY-MM-DD")
+            "Data 1º Aporte": st.column_config.DateColumn("Data 1º Aporte", format="DD/MM/YYYY")
         }
     )
 
@@ -203,3 +207,6 @@ if arquivo:
         tab1, tab2 = st.tabs(["📈 Rentabilidade e Retorno Total", "🔎 Valuation (Graham & Bazin)"])
         with tab1: st.dataframe(pd.DataFrame(dados_perf), use_container_width=True, hide_index=True)
         with tab2: st.dataframe(pd.DataFrame(dados_val), use_container_width=True, hide_index=True)
+
+else:
+    st.info("Aguardando o upload do arquivo da B3 para iniciar.")
