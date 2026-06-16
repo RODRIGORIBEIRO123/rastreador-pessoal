@@ -4,6 +4,7 @@ import numpy as np
 import yfinance as yf
 from bcb import sgs
 import re
+import io
 
 # ==========================================
 # 1. CONFIGURAÇÃO E MEMÓRIA
@@ -11,6 +12,7 @@ import re
 st.set_page_config(page_title="Terminal de Gestão CNPI", layout="wide")
 st.title("📊 Terminal de Gestão Profissional")
 
+# Memória do aplicativo para não apagar os dados ao clicar nos botões
 if 'df_base' not in st.session_state: st.session_state.df_base = pd.DataFrame(columns=["Ativo", "Quantidade", "Preço Médio", "Data 1º Aporte"])
 if 'dados_mercado' not in st.session_state: st.session_state.dados_mercado = {}
 if 'df_simul' not in st.session_state: st.session_state.df_simul = pd.DataFrame()
@@ -41,67 +43,79 @@ def ignorar_ativo(ticker):
     return False
 
 # ==========================================
-# 2. UPLOAD E LEITURA (MOTOR BLINDADO)
+# 2. UPLOAD E LEITURA (MOTOR UNIVERSAL BLINDADO)
 # ==========================================
+def ler_arquivo_b3(arquivo_upload):
+    if arquivo_upload.name.endswith('.csv'):
+        conteudo = arquivo_upload.getvalue()
+        try:
+            # Tenta decodificar quebrando o BOM (Byte Order Mark) invisível do Excel
+            texto = conteudo.decode('utf-8-sig')
+        except UnicodeDecodeError:
+            texto = conteudo.decode('latin1')
+            
+        # Detecta automaticamente se o arquivo usa vírgula ou ponto-e-vírgula
+        primeira_linha = texto.split('\n')[0]
+        separador = ';' if ';' in primeira_linha else ','
+        
+        df = pd.read_csv(io.StringIO(texto), sep=separador)
+    else:
+        df = pd.read_excel(arquivo_upload)
+        
+    df.columns = df.columns.astype(str).str.strip()
+    return df
+
 st.sidebar.header("1. Upload da B3")
 arquivo = st.sidebar.file_uploader("Arquivo Negociação B3", type=["xlsx", "csv"])
 
 if arquivo and st.session_state.df_base.empty:
-    with st.spinner("Processando histórico..."):
-        # Leitor inteligente que aceita CSV com Vírgula ou Ponto-e-Vírgula
-        if arquivo.name.endswith('.csv'):
-            try:
-                df = pd.read_csv(arquivo, sep=';', encoding='latin1')
-                if 'Data do Negócio' not in df.columns:
-                    arquivo.seek(0)
-                    df = pd.read_csv(arquivo, sep=',', encoding='utf-8')
-            except:
-                arquivo.seek(0)
-                df = pd.read_csv(arquivo, sep=',', encoding='utf-8')
-        else:
-            df = pd.read_excel(arquivo)
+    with st.spinner("Processando histórico e alocando memória..."):
+        try:
+            df = ler_arquivo_b3(arquivo)
             
-        df.columns = df.columns.str.strip()
-        df['Data do Negócio'] = pd.to_datetime(df['Data do Negócio'], format='%d/%m/%Y', errors='coerce')
-        df['Preço'] = df['Preço'].astype(str).replace({r'R\$': '', r'\.': '', ',': '.'}, regex=True).astype(float)
-        df['Valor'] = df['Valor'].astype(str).replace({r'R\$': '', r'\.': '', ',': '.'}, regex=True).astype(float)
-        df = df.sort_values('Data do Negócio')
-        
-        posicoes = {}
-        for _, row in df.iterrows():
-            if ignorar_ativo(row['Código de Negociação']): continue
-            ticker = str(row['Código de Negociação']).strip().upper()
-            ticker = ticker[:-1] if ticker.endswith('F') else ticker
-            qtd, valor, data = row['Quantidade'], row['Valor'], row['Data do Negócio']
+            # Conversão robusta de datas e números
+            df['Data do Negócio'] = pd.to_datetime(df['Data do Negócio'], dayfirst=True, errors='coerce')
+            df['Preço'] = df['Preço'].astype(str).replace({r'R\$': '', r'\.': '', ',': '.'}, regex=True).astype(float)
+            df['Valor'] = df['Valor'].astype(str).replace({r'R\$': '', r'\.': '', ',': '.'}, regex=True).astype(float)
+            df = df.sort_values('Data do Negócio')
             
-            if ticker not in posicoes: posicoes[ticker] = {'qtd': 0.0, 'valor': 0.0, 'primeiro_aporte': data}
-            if row['Tipo de Movimentação'] == 'Compra':
-                posicoes[ticker]['qtd'] += qtd
-                posicoes[ticker]['valor'] += valor
-                if pd.notna(data) and data < posicoes[ticker]['primeiro_aporte']: posicoes[ticker]['primeiro_aporte'] = data
-            elif row['Tipo de Movimentação'] == 'Venda' and posicoes[ticker]['qtd'] > 0:
-                qtd_venda = min(qtd, posicoes[ticker]['qtd'])
-                pm_atual = posicoes[ticker]['valor'] / posicoes[ticker]['qtd']
-                posicoes[ticker]['qtd'] -= qtd_venda
-                posicoes[ticker]['valor'] -= (qtd_venda * pm_atual)
+            posicoes = {}
+            for _, row in df.iterrows():
+                if ignorar_ativo(row['Código de Negociação']): continue
+                ticker = str(row['Código de Negociação']).strip().upper()
+                ticker = ticker[:-1] if ticker.endswith('F') else ticker
+                qtd, valor, data = row['Quantidade'], row['Valor'], row['Data do Negócio']
+                
+                if ticker not in posicoes: posicoes[ticker] = {'qtd': 0.0, 'valor': 0.0, 'primeiro_aporte': data}
+                if row['Tipo de Movimentação'] == 'Compra':
+                    posicoes[ticker]['qtd'] += qtd
+                    posicoes[ticker]['valor'] += valor
+                    if pd.notna(data) and data < posicoes[ticker]['primeiro_aporte']: posicoes[ticker]['primeiro_aporte'] = data
+                elif row['Tipo de Movimentação'] == 'Venda' and posicoes[ticker]['qtd'] > 0:
+                    qtd_venda = min(qtd, posicoes[ticker]['qtd'])
+                    pm_atual = posicoes[ticker]['valor'] / posicoes[ticker]['qtd']
+                    posicoes[ticker]['qtd'] -= qtd_venda
+                    posicoes[ticker]['valor'] -= (qtd_venda * pm_atual)
 
-        ativos_limpos = []
-        for t, d in posicoes.items():
-            if d['qtd'] > 0:
-                ativos_limpos.append({
-                    "Ativo": t, "Quantidade": float(d['qtd']), 
-                    "Preço Médio": float(d['valor'] / d['qtd']), 
-                    "Data 1º Aporte": d['primeiro_aporte'].date() if pd.notna(d['primeiro_aporte']) else pd.Timestamp.now().date()
-                })
-        st.session_state.df_base = pd.DataFrame(ativos_limpos)
-        st.rerun()
+            ativos_limpos = []
+            for t, d in posicoes.items():
+                if d['qtd'] > 0:
+                    ativos_limpos.append({
+                        "Ativo": t, "Quantidade": float(d['qtd']), 
+                        "Preço Médio": float(d['valor'] / d['qtd']), 
+                        "Data 1º Aporte": d['primeiro_aporte'].date() if pd.notna(d['primeiro_aporte']) else pd.Timestamp.now().date()
+                    })
+            st.session_state.df_base = pd.DataFrame(ativos_limpos)
+            st.rerun()
+        except Exception as e:
+            st.error(f"Erro ao ler o arquivo. Certifique-se de que é a planilha original da B3. Detalhe: {e}")
 
 # ==========================================
-# 3. INTERFACE DE EDIÇÃO MANUAL
+# 3. INTERFACE DE EDIÇÃO MANUAL (BOTÕES EXPLÍCITOS)
 # ==========================================
 if not st.session_state.df_base.empty:
     st.markdown("### 2. Edição Manual da Carteira")
-    st.markdown("Ajuste as quantidades, adicione os ativos faltantes ou exclua o que já não possui.")
+    st.markdown("Ajuste as quantidades, inclua FIIs que faltaram ou exclua o lixo residual. **As alterações são salvas automaticamente na tabela abaixo.**")
     
     col1, col2 = st.columns([1, 1])
     
@@ -126,7 +140,6 @@ if not st.session_state.df_base.empty:
                 st.session_state.df_base = pd.concat([st.session_state.df_base, nova_linha], ignore_index=True)
                 st.rerun()
 
-    # Tabela Centralizada para Correção Rápida
     df_editado = st.data_editor(
         st.session_state.df_base, use_container_width=True, hide_index=True,
         column_config={
@@ -138,7 +151,7 @@ if not st.session_state.df_base.empty:
     )
 
     if st.button("🚀 Processar Conexão com o Mercado", type="primary"):
-        st.session_state.df_base = df_editado # Salva as edições
+        st.session_state.df_base = df_editado 
         df_macro = carregar_macro()
         progresso = st.progress(0)
         total = len(df_editado)
@@ -179,7 +192,7 @@ if not st.session_state.df_base.empty:
             
         st.session_state.dados_mercado = dados_mercado
         st.session_state.df_simul = pd.DataFrame(linhas_simul_iniciais)
-        st.success("Dados sincronizados!")
+        st.success("Dados de Mercado Sincronizados com Sucesso!")
 
     # ==========================================
     # 4. PAINEL DE RELATÓRIOS (ABAS)
@@ -213,9 +226,9 @@ if not st.session_state.df_base.empty:
         # ABA 2
         with tab2:
             st.markdown("### Simulador de Aportes")
-            yield_desejado = st.number_input("Digite o seu Dividend Yield Desejado (% Bazin):", value=6.0, min_value=0.1, step=0.5) / 100.0
+            yield_desejado = st.number_input("Taxa de Risco - Yield Desejado (% Bazin):", value=6.0, min_value=0.1, step=0.5) / 100.0
             
-            st.markdown("Altere o LPA ou os Dividendos abaixo e veja as margens reagirem instantaneamente:")
+            st.markdown("Altere o LPA ou os Dividendos Projetados abaixo e simule as Margens de Segurança de Graham e Bazin:")
             df_simul_editado = st.data_editor(
                 st.session_state.df_simul, use_container_width=True, hide_index=True,
                 disabled=["Ativo", "Cotação Atual", "VPA (Contábil)"],
@@ -240,7 +253,7 @@ if not st.session_state.df_base.empty:
                 
                 linhas_val.append({"Ativo": t, "Preço Graham": graham, "Margem Graham": margem_g, "Preço Bazin": bazin, "Margem Bazin": margem_b})
                 
-            st.markdown("### Resultado Matemático (Clique na coluna para ordenar)")
+            st.markdown("### Resultado Matemático (Ordenável)")
             st.dataframe(pd.DataFrame(linhas_val), use_container_width=True, hide_index=True, column_config={
                 "Preço Graham": st.column_config.NumberColumn("Preço Teto Graham", format="R$ %.2f"),
                 "Margem Graham": st.column_config.NumberColumn("Margem Graham", format="%.2f %%"),
