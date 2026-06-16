@@ -26,10 +26,14 @@ def carregar_macro():
         return macro
     except: return pd.DataFrame()
 
-def calcular_macro_acumulado(df_macro, data_inicio):
+# ATUALIZADO: Agora aceita Data Fim para cálculos de períodos específicos
+def calcular_macro_acumulado(df_macro, data_inicio, data_fim=None):
     if df_macro is None or df_macro.empty or pd.isna(data_inicio): return 0.0, 0.0
     try:
-        filtro = df_macro.loc[data_inicio:]
+        if data_fim:
+            filtro = df_macro.loc[data_inicio:data_fim]
+        else:
+            filtro = df_macro.loc[data_inicio:]
         cdi_acum = ((1 + filtro['CDI'].dropna()).prod() - 1) * 100
         ipca_acum = ((1 + filtro['IPCA'].dropna()).prod() - 1) * 100
         return cdi_acum, ipca_acum
@@ -146,7 +150,7 @@ if arquivo and st.session_state.df_base.empty:
 # ==========================================
 if not st.session_state.df_base.empty:
     st.markdown("### 2. Parametrização da Carteira")
-    st.markdown("Ajuste os preços médios e a **Data do 1º Aporte**. O sistema buscará o CDI e IPCA acumulados exatos a partir da data que você definir.")
+    st.markdown("Ajuste os preços médios e a **Data do 1º Aporte** para as análises globais.")
     
     col1, col2 = st.columns([1, 1])
     with col1:
@@ -275,12 +279,8 @@ if not st.session_state.df_base.empty:
         # --- ABA 2: BAZIN ---
         with tab2:
             st.markdown("### Método Décio Bazin (Foco em Renda Passiva)")
-            st.markdown("Edite o **Dividendo Projetado (R$)** na tabela abaixo. O Yield global exigido será aplicado para encontrar o seu Preço Teto exato.")
-            
-            # Campo Global de Yield Desejado (Aplica a toda a carteira)
             yield_desejado = st.number_input("Taxa de Risco - Yield Desejado (%):", value=6.0, min_value=0.1, step=0.5) / 100.0
             
-            # O Erro do KeyError estava aqui. Agora puxamos apenas 3 colunas vitais:
             df_bazin_view = st.session_state.df_simul[["Ativo", "Cotação Atual", "Div. Projetado (R$)"]].copy()
             df_bazin_editado = st.data_editor(
                 df_bazin_view, use_container_width=True, hide_index=True,
@@ -309,7 +309,7 @@ if not st.session_state.df_base.empty:
         # --- ABA 3: GRAHAM ---
         with tab3:
             st.markdown("### Método Benjamin Graham (Valor Intrínseco)")
-            st.warning("⚠️ O método de Graham não se aplica a FIIs ou a empresas com prejuízo contábil (VPA ou LPA negativos).")
+            st.warning("⚠️ O método de Graham não se aplica a FIIs ou a empresas com prejuízo contábil.")
             
             df_graham_view = st.session_state.df_simul[["Ativo", "Cotação Atual", "VPA (Contábil)", "LPA Projetado"]].copy()
             df_graham_editado = st.data_editor(
@@ -337,32 +337,76 @@ if not st.session_state.df_base.empty:
                 "Margem de Segurança": st.column_config.NumberColumn(format="%.2f %%")
             })
 
-        # --- ABA 4: GRÁFICOS (PLOTLY Engine) ---
+        # --- ABA 4: GRÁFICOS INTERATIVOS ---
         with tab4:
-            st.markdown("### Análise Comparativa Visual")
-            
+            st.markdown("### 1. Performance Global (Desde o 1º Aporte)")
             todos_ativos = df_perf_final['Ativo'].tolist()
-            ativos_selecionados = st.multiselect("Selecione os ativos para exibir nos gráficos:", todos_ativos, default=todos_ativos[:6])
+            ativos_selecionados = st.multiselect("Selecione os ativos para análise:", todos_ativos, default=todos_ativos[:6], key="ms_global")
             
             if ativos_selecionados:
                 df_grafico = df_perf_final[df_perf_final['Ativo'].isin(ativos_selecionados)]
-                
-                # Gráfico 1: Rentabilidade com Labels e Eixo %
-                st.markdown("#### Retorno Total vs CDI vs IPCA")
-                df_melt = df_grafico.melt(id_vars=["Ativo"], 
-                                          value_vars=["Evolução c/ Div", "CDI Acum.", "IPCA Acum."],
-                                          var_name="Indicador", value_name="Rentabilidade")
+                df_melt = df_grafico.melt(id_vars=["Ativo"], value_vars=["Evolução c/ Div", "CDI Acum.", "IPCA Acum."], var_name="Indicador", value_name="Rentabilidade")
                 
                 fig1 = px.bar(df_melt, x="Ativo", y="Rentabilidade", color="Indicador", barmode="group", text="Rentabilidade")
                 fig1.update_traces(texttemplate='%{text:.2f}%', textposition='outside')
-                fig1.update_layout(yaxis_ticksuffix=" %", uniformtext_minsize=8, uniformtext_mode='hide', margin=dict(t=30))
+                fig1.update_layout(yaxis_ticksuffix=" %", margin=dict(t=30))
                 st.plotly_chart(fig1, use_container_width=True)
-                
-                # Gráfico 2: DY On Cost
-                st.markdown("#### Máquina de Geração de Caixa (Yield on Cost)")
-                fig2 = px.bar(df_grafico, x="Ativo", y="DY on Cost", text="DY on Cost")
-                fig2.update_traces(marker_color='#2ecc71', texttemplate='%{text:.2f}%', textposition='outside')
-                fig2.update_layout(yaxis_ticksuffix=" %", margin=dict(t=30))
-                st.plotly_chart(fig2, use_container_width=True)
-            else:
-                st.info("Selecione os ativos no menu acima.")
+
+            st.divider()
+            
+            # NOVO: ANÁLISE DE PERÍODO ESPECÍFICO
+            st.markdown("### 2. Análise de Período Específico")
+            st.markdown("Defina uma data de início e de fim para isolar o ganho de capital e proventos deste intervalo específico.")
+            
+            c_dt1, c_dt2, c_btn = st.columns([2, 2, 2])
+            with c_dt1: dt_inicio_custom = st.date_input("Data de Início", pd.Timestamp.now().date() - pd.DateOffset(years=1))
+            with c_dt2: dt_fim_custom = st.date_input("Data de Fim", pd.Timestamp.now().date())
+            
+            if c_btn.button("Gerar Análise do Período"):
+                if not ativos_selecionados:
+                    st.warning("Selecione os ativos na caixa acima primeiro.")
+                else:
+                    with st.spinner("Buscando cotações históricas na B3..."):
+                        linhas_custom = []
+                        df_macro = carregar_macro()
+                        
+                        # O YFinance exige que a data de término tenha +1 dia para incluir a própria data na busca
+                        dt_fim_yf = dt_fim_custom + pd.Timedelta(days=1)
+                        
+                        for t in ativos_selecionados:
+                            try:
+                                acao = yf.Ticker(f"{t}.SA")
+                                hist = acao.history(start=dt_inicio_custom.strftime('%Y-%m-%d'), end=dt_fim_yf.strftime('%Y-%m-%d'))
+                                
+                                if not hist.empty:
+                                    preco_ini = float(hist['Close'].iloc[0])
+                                    preco_fim = float(hist['Close'].iloc[-1])
+                                    
+                                    divs = acao.dividends
+                                    divs_filtrado = divs[(divs.index.tz_localize(None) >= pd.to_datetime(dt_inicio_custom)) & 
+                                                         (divs.index.tz_localize(None) <= pd.to_datetime(dt_fim_custom))]
+                                    divs_periodo = float(divs_filtrado.sum())
+                                    
+                                    # Rentabilidade do período exato
+                                    evolucao_custom = (((preco_fim + divs_periodo) / preco_ini) - 1) * 100
+                                    
+                                    cdi_custom, ipca_custom = calcular_macro_acumulado(df_macro, pd.to_datetime(dt_inicio_custom), pd.to_datetime(dt_fim_custom))
+                                    
+                                    linhas_custom.append({
+                                        "Ativo": t,
+                                        "Retorno Total (%)": evolucao_custom,
+                                        "CDI Período": cdi_custom,
+                                        "IPCA Período": ipca_custom
+                                    })
+                            except: pass
+                        
+                        if linhas_custom:
+                            df_custom = pd.DataFrame(linhas_custom)
+                            df_custom_melt = df_custom.melt(id_vars=["Ativo"], value_vars=["Retorno Total (%)", "CDI Período", "IPCA Período"], var_name="Indicador", value_name="Rentabilidade")
+                            
+                            fig_custom = px.bar(df_custom_melt, x="Ativo", y="Rentabilidade", color="Indicador", barmode="group", text="Rentabilidade")
+                            fig_custom.update_traces(texttemplate='%{text:.2f}%', textposition='outside')
+                            fig_custom.update_layout(yaxis_ticksuffix=" %", margin=dict(t=30))
+                            st.plotly_chart(fig_custom, use_container_width=True)
+                        else:
+                            st.error("Não foi possível obter os dados históricos para este período.")
