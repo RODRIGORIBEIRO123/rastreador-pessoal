@@ -7,39 +7,9 @@ import re
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="Terminal de Gestão | CNPI", layout="wide")
 st.title("📊 Terminal de Gestão Híbrido")
-st.markdown("Ajuste a sua carteira e clique nos cabeçalhos das tabelas finais para ordenar valores.")
+st.markdown("Ajuste a sua carteira abaixo. **Clique nos cabeçalhos das tabelas finais para ordenar os valores.**")
 
-# --- FUNÇÕES DE FORMATAÇÃO (MÁSCARAS VISUAIS) ---
-# Estas funções aplicam o estilo sem alterar o número original na memória
-def formatar_brl(valor):
-    try:
-        valor = float(valor)
-        if pd.isna(valor): return "R$ 0,00"
-        return f"R$ {valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-    except: return "R$ 0,00"
-
-def formatar_brl_val(valor): # Usado no Valuation para omitir zeros em FIIs
-    try:
-        valor = float(valor)
-        if pd.isna(valor) or valor == 0: return "-"
-        return f"R$ {valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-    except: return "-"
-
-def formatar_pct(valor):
-    try:
-        valor = float(valor)
-        if pd.isna(valor): return "0,00%"
-        return f"{valor:,.2f}%".replace(".", ",")
-    except: return "0,00%"
-
-def formatar_margem(valor):
-    try:
-        valor = float(valor)
-        if pd.isna(valor) or valor == 0: return "-"
-        sinal = "🟢 " if valor > 0 else "🔴 "
-        return f"{sinal}{valor:,.2f}%".replace(".", ",")
-    except: return "-"
-
+# --- FUNÇÕES ÚTEIS ---
 def eh_opcao_ou_futuro(ticker):
     if pd.isna(ticker): return True
     ticker = str(ticker).strip().upper()
@@ -159,7 +129,7 @@ if arquivo:
             except:
                 preco_atual, total_dividendos, divs_12m, lpa, vpa = pm_real, 0.0, 0.0, 0, 0
 
-            # MATEMÁTICA PURA (Mantida como FLOAT para permitir a ordenação correta)
+            # MATEMÁTICA PURA (FLOAT)
             valor_atual = preco_atual * qtd_real
             var_cota = ((valor_atual / valor_investido_real) - 1) * 100 if valor_investido_real > 0 else 0
             var_total = (((valor_atual + total_dividendos) / valor_investido_real) - 1) * 100 if valor_investido_real > 0 else 0
@@ -167,8 +137,8 @@ if arquivo:
 
             dados_perf.append({
                 "Ativo": ticker, "Qtd": int(qtd_real),
-                "PM Real": float(pm_real), "Cotação Atual": float(preco_atual),
-                "Investido": float(valor_investido_real), "Saldo Atual": float(valor_atual),
+                "PM Real": float(pm_real), "Cotação": float(preco_atual),
+                "Investido": float(valor_investido_real), "Saldo": float(valor_atual),
                 "Var. Cota": float(var_cota), "Retorno Total": float(var_total),
                 "IPCA (Período)": float(ipca_acum), "CDI (Período)": float(cdi_acum)
             })
@@ -178,32 +148,48 @@ if arquivo:
             bazin = divs_12m / 0.06 if divs_12m > 0 else 0
             margem_b = ((bazin / preco_atual) - 1) * 100 if bazin > 0 and preco_atual > 0 else 0
 
+            # Identificadores Visuais
+            status_g = "🟢" if margem_g > 0 else ("🔴" if graham > 0 else "-")
+            status_b = "🟢" if margem_b > 0 else ("🔴" if bazin > 0 else "-")
+
             dados_val.append({
                 "Ativo": ticker, "Cotação": float(preco_atual),
                 "LPA": float(lpa), "VPA": float(vpa), "Div. 12m": float(divs_12m),
-                "Preço Graham": float(graham), "Margem Graham": float(margem_g),
-                "Preço Bazin": float(bazin), "Margem Bazin": float(margem_b)
+                "Preço Graham": float(graham), "Status Graham": status_g, "Margem Graham": float(margem_g),
+                "Preço Bazin": float(bazin), "Status Bazin": status_b, "Margem Bazin": float(margem_b)
             })
             progress_bar.progress((i + 1) / total_ativos)
         
-        # APLICANDO A MÁSCARA VISUAL NO DATAFRAME
-        df_perf = pd.DataFrame(dados_perf)
-        estilo_perf = df_perf.style.format({
-            "PM Real": formatar_brl, "Cotação Atual": formatar_brl,
-            "Investido": formatar_brl, "Saldo Atual": formatar_brl,
-            "Var. Cota": formatar_pct, "Retorno Total": formatar_pct,
-            "IPCA (Período)": formatar_pct, "CDI (Período)": formatar_pct
-        })
-
-        df_val = pd.DataFrame(dados_val)
-        estilo_val = df_val.style.format({
-            "Cotação": formatar_brl, "LPA": formatar_brl_val, "VPA": formatar_brl_val,
-            "Div. 12m": formatar_brl_val, "Preço Graham": formatar_brl_val,
-            "Margem Graham": formatar_margem, "Preço Bazin": formatar_brl_val,
-            "Margem Bazin": formatar_margem
-        })
-
         st.write("---")
         tab1, tab2 = st.tabs(["📈 Rentabilidade e Retorno Total", "🔎 Valuation (Graham & Bazin)"])
-        with tab1: st.dataframe(estilo_perf, use_container_width=True, hide_index=True)
-        with tab2: st.dataframe(estilo_val, use_container_width=True, hide_index=True)
+        
+        # MÁSCARAS DE COLUNA STREAMLIT (Mantém a ordenação viva)
+        col_config_perf = {
+            "PM Real": st.column_config.NumberColumn("PM Real", format="R$ %.2f"),
+            "Cotação": st.column_config.NumberColumn("Cotação", format="R$ %.2f"),
+            "Investido": st.column_config.NumberColumn("Investido", format="R$ %.2f"),
+            "Saldo": st.column_config.NumberColumn("Saldo", format="R$ %.2f"),
+            "Var. Cota": st.column_config.NumberColumn("Var. Cota", format="%.2f %%"),
+            "Retorno Total": st.column_config.NumberColumn("Retorno Total", format="%.2f %%"),
+            "IPCA (Período)": st.column_config.NumberColumn("IPCA", format="%.2f %%"),
+            "CDI (Período)": st.column_config.NumberColumn("CDI", format="%.2f %%")
+        }
+        
+        col_config_val = {
+            "Cotação": st.column_config.NumberColumn("Cotação", format="R$ %.2f"),
+            "LPA": st.column_config.NumberColumn("LPA", format="R$ %.2f"),
+            "VPA": st.column_config.NumberColumn("VPA", format="R$ %.2f"),
+            "Div. 12m": st.column_config.NumberColumn("Div. 12m", format="R$ %.2f"),
+            "Preço Graham": st.column_config.NumberColumn("Preço Graham", format="R$ %.2f"),
+            "Margem Graham": st.column_config.NumberColumn("Margem Graham", format="%.2f %%"),
+            "Preço Bazin": st.column_config.NumberColumn("Preço Bazin", format="R$ %.2f"),
+            "Margem Bazin": st.column_config.NumberColumn("Margem Bazin", format="%.2f %%")
+        }
+
+        with tab1: 
+            st.dataframe(pd.DataFrame(dados_perf), use_container_width=True, hide_index=True, column_config=col_config_perf)
+        with tab2: 
+            st.dataframe(pd.DataFrame(dados_val), use_container_width=True, hide_index=True, column_config=col_config_val)
+
+else:
+    st.info("Aguardando o upload do ficheiro da B3 para iniciar.")
