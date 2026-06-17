@@ -14,6 +14,12 @@ import plotly.express as px
 st.set_page_config(page_title="Terminal de Gestão CNPI", layout="wide")
 st.title("📊 Terminal de Gestão Profissional")
 
+MAPEAMENTO_TICKERS = {
+    "GALG11": "GARE11", "SOMA3": "ALOS3", "ARZZ3": "ALOS3", 
+    "VVAR3": "BHIA3", "VIIA3": "BHIA3", "BRML3": "ALSO3", 
+    "BBRK11": "BRCR11", "HCTR11": "TRXD11", "TORD11": "TRXD11"
+}
+
 if 'df_base' not in st.session_state: st.session_state.df_base = pd.DataFrame(columns=["Ativo", "Quantidade", "Preço Médio", "Data Média"])
 if 'dados_mercado' not in st.session_state: st.session_state.dados_mercado = {}
 if 'df_simul' not in st.session_state: st.session_state.df_simul = pd.DataFrame()
@@ -60,6 +66,30 @@ def limpar_numero(x):
     try: return float(x)
     except: return 0.0
 
+def consolidar_carteira(df):
+    if df.empty: return df
+    df['Ativo'] = df['Ativo'].astype(str).str.strip().str.upper()
+    df['Ativo'] = df['Ativo'].apply(lambda x: MAPEAMENTO_TICKERS.get(x, x))
+    
+    linhas = []
+    for ativo, group in df.groupby('Ativo'):
+        qtd = float(group['Quantidade'].sum())
+        if qtd <= 0: continue
+        
+        valor_total = (group['Quantidade'] * group['Preço Médio']).sum()
+        pm = valor_total / qtd if qtd > 0 else 0
+        
+        soma_tempo = 0
+        for _, row in group.iterrows():
+            if pd.notna(row['Data Média']):
+                peso = row['Quantidade'] * row['Preço Médio']
+                ts = pd.Timestamp(row['Data Média']).timestamp()
+                soma_tempo += (ts * peso)
+                
+        dt_media = pd.to_datetime(soma_tempo / valor_total, unit='s').date() if (valor_total > 0 and soma_tempo > 0) else pd.Timestamp.now().date()
+        linhas.append({"Ativo": ativo, "Quantidade": qtd, "Preço Médio": float(pm), "Data Média": dt_media})
+    return pd.DataFrame(linhas)
+
 def ler_arquivo_universal(arquivo_upload):
     if arquivo_upload.name.endswith('.csv'):
         conteudo = arquivo_upload.getvalue()
@@ -93,20 +123,20 @@ def gerar_excel_premium(df_perf, df_val):
     return output.getvalue()
 
 # ==========================================
-# 2. SISTEMA DE UPLOAD (B3 OU BACKUP RESTORE)
+# 2. SISTEMA DE UPLOAD
 # ==========================================
 st.sidebar.header("1. Upload de Dados")
 arquivo = st.sidebar.file_uploader("Arquivo B3 ou Backup da Carteira", type=["xlsx", "csv"])
 
 if arquivo and st.session_state.df_base.empty:
-    with st.spinner("Analisando estrutura do arquivo..."):
+    with st.spinner("Analisando e Consolidando Dados..."):
         try:
             df = ler_arquivo_universal(arquivo)
             
             if 'Data Média' in df.columns and 'Ativo' in df.columns:
                 df['Data Média'] = pd.to_datetime(df['Data Média'], errors='coerce').dt.date
-                st.session_state.df_base = df
-                st.success("✅ Banco de Dados Restaurado com Sucesso!")
+                st.session_state.df_base = consolidar_carteira(df)
+                st.success("✅ Banco de Dados Restaurado e Consolidado!")
                 st.rerun()
                 
             else:
@@ -119,20 +149,17 @@ if arquivo and st.session_state.df_base.empty:
                     if ignorar_ativo(row['Código de Negociação']): continue
                     ticker = str(row['Código de Negociação']).strip().upper()
                     ticker = ticker[:-1] if ticker.endswith('F') else ticker
+                    ticker = MAPEAMENTO_TICKERS.get(ticker, ticker)
+                    
                     qtd, valor, data = row['Quantidade'], row['Valor'], row['Data do Negócio']
                     
-                    if ticker not in posicoes: 
-                        posicoes[ticker] = {'qtd': 0.0, 'valor': 0.0, 'soma_pesos': 0.0}
+                    if ticker not in posicoes: posicoes[ticker] = {'qtd': 0.0, 'valor': 0.0, 'soma_pesos': 0.0}
                         
                     if row['Tipo de Movimentação'] == 'Compra':
-                        if posicoes[ticker]['qtd'] == 0:
-                            posicoes[ticker]['soma_pesos'] = 0.0
-                            
+                        if posicoes[ticker]['qtd'] == 0: posicoes[ticker]['soma_pesos'] = 0.0
                         posicoes[ticker]['qtd'] += qtd
                         posicoes[ticker]['valor'] += valor
-                        
-                        ts = pd.Timestamp(data).timestamp()
-                        posicoes[ticker]['soma_pesos'] += (ts * valor)
+                        posicoes[ticker]['soma_pesos'] += (pd.Timestamp(data).timestamp() * valor)
                         
                     elif row['Tipo de Movimentação'] == 'Venda' and posicoes[ticker]['qtd'] > 0:
                         qtd_venda = min(qtd, posicoes[ticker]['qtd'])
@@ -145,24 +172,22 @@ if arquivo and st.session_state.df_base.empty:
                 ativos_limpos = []
                 for t, d in posicoes.items():
                     if d['qtd'] > 0 and d['valor'] > 0:
-                        avg_ts = d['soma_pesos'] / d['valor']
-                        data_proporcional = pd.to_datetime(avg_ts, unit='s')
+                        data_proporcional = pd.to_datetime(d['soma_pesos'] / d['valor'], unit='s')
                         ativos_limpos.append({
                             "Ativo": t, "Quantidade": float(d['qtd']), 
-                            "Preço Médio": float(d['valor'] / d['qtd']), 
-                            "Data Média": data_proporcional.date()
+                            "Preço Médio": float(d['valor'] / d['qtd']), "Data Média": data_proporcional.date()
                         })
-                st.session_state.df_base = pd.DataFrame(ativos_limpos)
+                st.session_state.df_base = consolidar_carteira(pd.DataFrame(ativos_limpos))
                 st.rerun()
         except Exception as e:
-            st.error(f"Erro ao processar arquivo. Verifique se é a planilha original da B3 ou o seu Backup. Detalhe: {e}")
+            st.error(f"Erro ao processar arquivo. Detalhe: {e}")
 
 # ==========================================
 # 3. INTERFACE DE PARAMETRIZAÇÃO E BACKUP
 # ==========================================
 if not st.session_state.df_base.empty:
     st.markdown("### 2. Controle do Banco de Dados")
-    st.markdown("Adicione novas compras, ajuste preços ou remova papéis antigos. **Utilize o botão de Backup para salvar o seu progresso no computador.**")
+    st.markdown("💡 **Dica de Gestor:** A coluna de Ativos agora é editável. Se quiser mesclar um ativo antigo com um novo (ex: GALG11 -> GARE11), basta digitar o novo nome por cima na tabela abaixo. O sistema fundirá os dois automaticamente ao processar.")
     
     col_a, col_b, col_c = st.columns([1, 1, 1])
     with col_a:
@@ -183,7 +208,7 @@ if not st.session_state.df_base.empty:
         if st.button("Adicionar à Base", use_container_width=True):
             if novo_t != "":
                 nova_linha = pd.DataFrame([{"Ativo": novo_t.upper(), "Quantidade": float(novo_q), "Preço Médio": float(novo_p), "Data Média": pd.Timestamp.now().date()}])
-                st.session_state.df_base = pd.concat([st.session_state.df_base, nova_linha], ignore_index=True)
+                st.session_state.df_base = consolidar_carteira(pd.concat([st.session_state.df_base, nova_linha], ignore_index=True))
                 st.rerun()
                 
     with col_c:
@@ -196,7 +221,7 @@ if not st.session_state.df_base.empty:
     df_editado = st.data_editor(
         st.session_state.df_base, use_container_width=True, hide_index=True,
         column_config={
-            "Ativo": st.column_config.TextColumn(disabled=True),
+            "Ativo": st.column_config.TextColumn("Ativo (Editável)", disabled=False),
             "Quantidade": st.column_config.NumberColumn(min_value=0.0),
             "Preço Médio": st.column_config.NumberColumn(format="R$ %.2f", min_value=0.0),
             "Data Média": st.column_config.DateColumn("Data Média Ponderada", format="DD/MM/YYYY")
@@ -204,39 +229,49 @@ if not st.session_state.df_base.empty:
     )
 
     if st.button("🚀 Processar Conexão com o Mercado", type="primary"):
-        st.session_state.df_base = df_editado 
+        st.session_state.df_base = consolidar_carteira(df_editado) 
         df_macro = carregar_macro()
         progresso = st.progress(0)
-        total = len(df_editado)
+        total = len(st.session_state.df_base)
         data_12m = pd.Timestamp.now() - pd.DateOffset(years=1)
         
         dados_mercado = {}
         linhas_simul_iniciais = []
 
-        for i, row in df_editado.iterrows():
+        for i, row in st.session_state.df_base.iterrows():
             ticker = str(row['Ativo']).strip().upper()
+            data_compra = pd.to_datetime(row['Data Média']) if pd.notna(row['Data Média']) else pd.Timestamp.now()
+            
+            # Valores Padrão (Fallback Seguro)
+            preco_atual = float(row['Preço Médio'])
+            divs_total, divs_12m, lpa, vpa = 0.0, 0.0, 0.0, 0.0
+            
             try:
-                data_compra = pd.to_datetime(row['Data Média']) if pd.notna(row['Data Média']) else pd.Timestamp.now()
-                
                 acao = yf.Ticker(f"{ticker}.SA")
-                hist = acao.history(period="1d")
-                preco_atual = float(hist['Close'].iloc[-1]) if not hist.empty else float(row['Preço Médio'])
                 
-                divs = acao.dividends
-                divs_total = float(divs[divs.index.tz_localize(None) >= data_compra].sum() * row['Quantidade'])
-                divs_12m = float(divs[divs.index.tz_localize(None) >= data_12m].sum())
+                # BLOCO 1: Cotação (Isolado para não quebrar a tela)
+                try:
+                    hist = acao.history(period="1d")
+                    if not hist.empty: preco_atual = float(hist['Close'].iloc[-1])
+                except: pass
                 
-                info = acao.info
-                # CORREÇÃO CIRÚRGICA 1: Busca agressiva e à prova de falhas para LPA e VPA
-                lpa = float(info.get('trailingEps') or info.get('forwardEps') or 0.0)
-                vpa = float(info.get('bookValue') or 0.0)
+                # BLOCO 2: Dividendos (Isolado)
+                try:
+                    divs = acao.dividends
+                    divs_total = float(divs[divs.index.tz_localize(None) >= data_compra].sum() * row['Quantidade'])
+                    divs_12m = float(divs[divs.index.tz_localize(None) >= data_12m].sum())
+                except: pass
                 
-                # Se não achar o Valor Patrimonial, calcula reverso usando o P/VP e a cotação
-                if vpa == 0.0 and info.get('priceToBook'):
-                    try: vpa = preco_atual / float(info.get('priceToBook'))
-                    except: pass
-            except:
-                preco_atual, divs_total, divs_12m, lpa, vpa = float(row['Preço Médio']), 0.0, 0.0, 0.0, 0.0
+                # BLOCO 3: Fundamentos (Isolado para não afetar os cálculos acima se o FII falhar)
+                try:
+                    info = acao.info
+                    lpa = float(info.get('trailingEps') or info.get('forwardEps') or 0.0)
+                    vpa = float(info.get('bookValue') or 0.0)
+                    if vpa == 0.0 and info.get('priceToBook') and preco_atual > 0:
+                        vpa = preco_atual / float(info.get('priceToBook'))
+                except: pass
+                
+            except: pass
 
             cdi, ipca = calcular_macro_acumulado(df_macro, data_compra)
             meses_investido = calcular_meses(data_compra)
@@ -254,7 +289,7 @@ if not st.session_state.df_base.empty:
             
         st.session_state.dados_mercado = dados_mercado
         st.session_state.df_simul = pd.DataFrame(linhas_simul_iniciais)
-        st.success("Análise Matemática Concluída!")
+        st.success("Análise Matemática Concluída e Posições Fundidas!")
 
     # ==========================================
     # 4. PAINEL DE RELATÓRIOS (4 ABAS)
@@ -324,18 +359,12 @@ if not st.session_state.df_base.empty:
             yield_desejado = st.number_input("Taxa de Risco Exigida (%):", value=6.0, min_value=0.1, step=0.5) / 100.0
             
             df_bazin_view = st.session_state.df_simul[["Ativo", "Cotação Atual", "Div. Projetado (R$)"]].copy()
-            
-            # CORREÇÃO CIRÚRGICA 2: Inserção do 'key' para travar a memória e não apagar a sua digitação.
             df_bazin_editado = st.data_editor(
                 df_bazin_view, use_container_width=True, hide_index=True, disabled=["Ativo", "Cotação Atual"],
-                column_config={
-                    "Cotação Atual": st.column_config.NumberColumn(format="R$ %.2f"), 
-                    "Div. Projetado (R$)": st.column_config.NumberColumn("Div. Projetado (R$)", format="R$ %.2f")
-                },
+                column_config={"Cotação Atual": st.column_config.NumberColumn(format="R$ %.2f"), "Div. Projetado (R$)": st.column_config.NumberColumn("Div. Projetado (R$)", format="R$ %.2f")},
                 key="edit_bazin" 
             )
             
-            # Salvando permanentemente a sua edição do Bazin na memória central
             st.session_state.df_simul["Div. Projetado (R$)"] = df_bazin_editado["Div. Projetado (R$)"]
             
             linhas_bazin = []
@@ -351,19 +380,12 @@ if not st.session_state.df_base.empty:
         with tab3:
             st.markdown("### Método Benjamin Graham")
             df_graham_view = st.session_state.df_simul[["Ativo", "Cotação Atual", "VPA (Contábil)", "LPA Projetado"]].copy()
-            
-            # CORREÇÃO CIRÚRGICA 3: VPA destravado para edição manual e 'key' inserida para memória.
             df_graham_editado = st.data_editor(
                 df_graham_view, use_container_width=True, hide_index=True, disabled=["Ativo", "Cotação Atual"],
-                column_config={
-                    "Cotação Atual": st.column_config.NumberColumn(format="R$ %.2f"), 
-                    "VPA (Contábil)": st.column_config.NumberColumn("VPA (Editar)", format="R$ %.2f"), 
-                    "LPA Projetado": st.column_config.NumberColumn("LPA Projetado (Editar)", format="R$ %.2f")
-                },
+                column_config={"Cotação Atual": st.column_config.NumberColumn(format="R$ %.2f"), "VPA (Contábil)": st.column_config.NumberColumn("VPA (Editar)", format="R$ %.2f"), "LPA Projetado": st.column_config.NumberColumn("LPA Projetado (Editar)", format="R$ %.2f")},
                 key="edit_graham"
             )
             
-            # Salvando permanentemente a sua edição do Graham na memória central
             st.session_state.df_simul["VPA (Contábil)"] = df_graham_editado["VPA (Contábil)"]
             st.session_state.df_simul["LPA Projetado"] = df_graham_editado["LPA Projetado"]
             
@@ -378,7 +400,7 @@ if not st.session_state.df_base.empty:
                 "Cotação Atual": st.column_config.NumberColumn(format="R$ %.2f"), "Preço Justo (Graham)": st.column_config.NumberColumn(format="R$ %.2f"), "Margem de Segurança": st.column_config.NumberColumn(format="%.2f %%")})
 
         with tab4:
-            st.markdown("### 1. Performance Global (Desde a Data Média Ponderada)")
+            st.markdown("### 1. Performance Global (Individualizada por Ativo)")
             todos_ativos = df_perf_final['Ativo'].tolist()
             
             c_sel, c_ind = st.columns([2, 1])
@@ -435,7 +457,9 @@ if not st.session_state.df_base.empty:
                         
                         if linhas_custom:
                             df_custom = pd.DataFrame(linhas_custom)
-                            df_custom['Período'] = f"{dt_inicio_custom.strftime('%d/%m/%Y')} a {dt_fim_custom.strftime('%d/%m/%Y')}"
+                            periodo_str = f"{dt_inicio_custom.strftime('%d/%m/%Y')} a {dt_fim_custom.strftime('%d/%m/%Y')}"
+                            df_custom['Período'] = periodo_str
+                            
                             df_custom_melt = df_custom.melt(id_vars=["Ativo", "Período"], value_vars=ind_custom, var_name="Indicador", value_name="Rentabilidade")
                             
                             titulo_graf2 = f"Performance no Período: {dt_inicio_custom.strftime('%d/%m/%Y')} a {dt_fim_custom.strftime('%d/%m/%Y')}"
