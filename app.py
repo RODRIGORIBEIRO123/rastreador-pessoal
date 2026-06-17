@@ -14,7 +14,7 @@ import plotly.express as px
 st.set_page_config(page_title="Terminal de Gestão CNPI", layout="wide")
 st.title("📊 Terminal de Gestão Profissional")
 
-if 'df_base' not in st.session_state: st.session_state.df_base = pd.DataFrame(columns=["Ativo", "Quantidade", "Preço Médio", "Data 1º Aporte"])
+if 'df_base' not in st.session_state: st.session_state.df_base = pd.DataFrame(columns=["Ativo", "Quantidade", "Preço Médio", "Data Média"])
 if 'dados_mercado' not in st.session_state: st.session_state.dados_mercado = {}
 if 'df_simul' not in st.session_state: st.session_state.df_simul = pd.DataFrame()
 
@@ -26,14 +26,10 @@ def carregar_macro():
         return macro
     except: return pd.DataFrame()
 
-# ATUALIZADO: Agora aceita Data Fim para cálculos de períodos específicos
 def calcular_macro_acumulado(df_macro, data_inicio, data_fim=None):
     if df_macro is None or df_macro.empty or pd.isna(data_inicio): return 0.0, 0.0
     try:
-        if data_fim:
-            filtro = df_macro.loc[data_inicio:data_fim]
-        else:
-            filtro = df_macro.loc[data_inicio:]
+        filtro = df_macro.loc[data_inicio:data_fim] if data_fim else df_macro.loc[data_inicio:]
         cdi_acum = ((1 + filtro['CDI'].dropna()).prod() - 1) * 100
         ipca_acum = ((1 + filtro['IPCA'].dropna()).prod() - 1) * 100
         return cdi_acum, ipca_acum
@@ -64,7 +60,7 @@ def limpar_numero(x):
     try: return float(x)
     except: return 0.0
 
-def ler_arquivo_b3(arquivo_upload):
+def ler_arquivo_universal(arquivo_upload):
     if arquivo_upload.name.endswith('.csv'):
         conteudo = arquivo_upload.getvalue()
         try: texto = conteudo.decode('utf-8-sig')
@@ -77,107 +73,134 @@ def ler_arquivo_b3(arquivo_upload):
 
 def gerar_excel_premium(df_perf, df_val):
     output = io.BytesIO()
-    df_p = df_perf.fillna(0)
-    df_v = df_val.fillna(0)
+    df_p, df_v = df_perf.fillna(0), df_val.fillna(0)
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         df_p.to_excel(writer, sheet_name='Rentabilidade', index=False)
         df_v.to_excel(writer, sheet_name='Valuation_Bazin', index=False)
         ws = writer.sheets['Rentabilidade']
         chart = BarChart()
-        chart.type = "col"
-        chart.style = 13
-        chart.title = "Retorno Total vs CDI e IPCA"
-        chart.y_axis.title = "Rentabilidade (%)"
+        chart.type, chart.style = "col", 13
+        chart.title, chart.y_axis.title = "Retorno Total vs CDI e IPCA", "Rentabilidade (%)"
         dados_grafico = Reference(ws, min_col=9, min_row=1, max_col=11, max_row=len(df_p)+1)
         categorias = Reference(ws, min_col=1, min_row=2, max_row=len(df_p)+1)
         chart.add_data(dados_grafico, titles_from_data=True)
         chart.set_categories(categorias)
-        chart.height = 15
-        chart.width = 30
+        chart.height, chart.width = 15, 30
         ws.add_chart(chart, "M2")
     return output.getvalue()
 
 # ==========================================
-# 2. UPLOAD E LEITURA DA B3
+# 2. SISTEMA DE UPLOAD (B3 OU BACKUP RESTORE)
 # ==========================================
-st.sidebar.header("1. Upload da Carteira")
-arquivo = st.sidebar.file_uploader("Arquivo Base", type=["xlsx", "csv"])
+st.sidebar.header("1. Upload de Dados")
+arquivo = st.sidebar.file_uploader("Arquivo B3 ou Backup da Carteira", type=["xlsx", "csv"])
 
 if arquivo and st.session_state.df_base.empty:
-    with st.spinner("Purificando base de dados..."):
+    with st.spinner("Analisando estrutura do arquivo..."):
         try:
-            df = ler_arquivo_b3(arquivo)
-            df['Data do Negócio'] = pd.to_datetime(df['Data do Negócio'], dayfirst=True, errors='coerce')
-            df['Quantidade'] = df['Quantidade'].apply(limpar_numero)
-            df['Preço'] = df['Preço'].apply(limpar_numero)
-            df['Valor'] = df['Valor'].apply(limpar_numero)
-            df = df.sort_values('Data do Negócio')
+            df = ler_arquivo_universal(arquivo)
             
-            posicoes = {}
-            for _, row in df.iterrows():
-                if ignorar_ativo(row['Código de Negociação']): continue
-                ticker = str(row['Código de Negociação']).strip().upper()
-                ticker = ticker[:-1] if ticker.endswith('F') else ticker
-                qtd, valor, data = row['Quantidade'], row['Valor'], row['Data do Negócio']
+            # IDENTIFICA SE É UM BACKUP ANTERIOR
+            if 'Data Média' in df.columns and 'Ativo' in df.columns:
+                df['Data Média'] = pd.to_datetime(df['Data Média'], errors='coerce').dt.date
+                st.session_state.df_base = df
+                st.success("✅ Banco de Dados Restaurado com Sucesso!")
+                st.rerun()
                 
-                if ticker not in posicoes: posicoes[ticker] = {'qtd': 0.0, 'valor': 0.0, 'primeiro_aporte': data}
-                if row['Tipo de Movimentação'] == 'Compra':
-                    posicoes[ticker]['qtd'] += qtd
-                    posicoes[ticker]['valor'] += valor
-                    if pd.notna(data) and data < posicoes[ticker]['primeiro_aporte']: posicoes[ticker]['primeiro_aporte'] = data
-                elif row['Tipo de Movimentação'] == 'Venda' and posicoes[ticker]['qtd'] > 0:
-                    qtd_venda = min(qtd, posicoes[ticker]['qtd'])
-                    pm_atual = posicoes[ticker]['valor'] / posicoes[ticker]['qtd']
-                    posicoes[ticker]['qtd'] -= qtd_venda
-                    posicoes[ticker]['valor'] -= (qtd_venda * pm_atual)
+            # SE NÃO FOR BACKUP, PROCESSA A LÓGICA COMPLEXA DA B3
+            else:
+                df['Data do Negócio'] = pd.to_datetime(df['Data do Negócio'], dayfirst=True, errors='coerce')
+                df['Quantidade'], df['Preço'], df['Valor'] = df['Quantidade'].apply(limpar_numero), df['Preço'].apply(limpar_numero), df['Valor'].apply(limpar_numero)
+                df = df.sort_values('Data do Negócio')
+                
+                posicoes = {}
+                for _, row in df.iterrows():
+                    if ignorar_ativo(row['Código de Negociação']): continue
+                    ticker = str(row['Código de Negociação']).strip().upper()
+                    ticker = ticker[:-1] if ticker.endswith('F') else ticker
+                    qtd, valor, data = row['Quantidade'], row['Valor'], row['Data do Negócio']
+                    
+                    if ticker not in posicoes: 
+                        posicoes[ticker] = {'qtd': 0.0, 'valor': 0.0, 'soma_pesos': 0.0}
+                        
+                    if row['Tipo de Movimentação'] == 'Compra':
+                        # Se zerou a posição no passado, zera a memória de tempo
+                        if posicoes[ticker]['qtd'] == 0:
+                            posicoes[ticker]['soma_pesos'] = 0.0
+                            
+                        posicoes[ticker]['qtd'] += qtd
+                        posicoes[ticker]['valor'] += valor
+                        
+                        # CÁLCULO DO PRAZO MÉDIO PONDERADO (DURATION)
+                        ts = pd.Timestamp(data).timestamp()
+                        posicoes[ticker]['soma_pesos'] += (ts * valor)
+                        
+                    elif row['Tipo de Movimentação'] == 'Venda' and posicoes[ticker]['qtd'] > 0:
+                        qtd_venda = min(qtd, posicoes[ticker]['qtd'])
+                        pm_atual = posicoes[ticker]['valor'] / posicoes[ticker]['qtd']
+                        posicoes[ticker]['qtd'] -= qtd_venda
+                        posicoes[ticker]['valor'] -= (qtd_venda * pm_atual)
+                        if posicoes[ticker]['qtd'] <= 0.001: 
+                            posicoes[ticker]['qtd'], posicoes[ticker]['valor'], posicoes[ticker]['soma_pesos'] = 0.0, 0.0, 0.0
 
-            ativos_limpos = []
-            for t, d in posicoes.items():
-                if d['qtd'] > 0:
-                    data_aporte = d['primeiro_aporte'] if pd.notna(d['primeiro_aporte']) else pd.Timestamp.now()
-                    ativos_limpos.append({
-                        "Ativo": t, "Quantidade": float(d['qtd']), 
-                        "Preço Médio": float(d['valor'] / d['qtd']), 
-                        "Data 1º Aporte": data_aporte.date()
-                    })
-            st.session_state.df_base = pd.DataFrame(ativos_limpos)
-            st.rerun()
+                ativos_limpos = []
+                for t, d in posicoes.items():
+                    if d['qtd'] > 0 and d['valor'] > 0:
+                        avg_ts = d['soma_pesos'] / d['valor']
+                        data_proporcional = pd.to_datetime(avg_ts, unit='s')
+                        ativos_limpos.append({
+                            "Ativo": t, "Quantidade": float(d['qtd']), 
+                            "Preço Médio": float(d['valor'] / d['qtd']), 
+                            "Data Média": data_proporcional.date()
+                        })
+                st.session_state.df_base = pd.DataFrame(ativos_limpos)
+                st.rerun()
         except Exception as e:
-            st.error(f"Erro ao ler o arquivo. Detalhe técnico: {e}")
+            st.error(f"Erro ao processar arquivo. Verifique se é a planilha original da B3 ou o seu Backup. Detalhe: {e}")
 
 # ==========================================
-# 3. INTERFACE DE PARAMETRIZAÇÃO
+# 3. INTERFACE DE PARAMETRIZAÇÃO E BACKUP
 # ==========================================
 if not st.session_state.df_base.empty:
-    st.markdown("### 2. Parametrização da Carteira")
-    st.markdown("Ajuste os preços médios e a **Data do 1º Aporte** para as análises globais.")
+    st.markdown("### 2. Controle do Banco de Dados")
+    st.markdown("Adicione novas compras, ajuste preços ou remova papéis antigos. **Utilize o botão de Backup para salvar o seu progresso no computador.**")
     
-    col1, col2 = st.columns([1, 1])
-    with col1:
+    col_a, col_b, col_c = st.columns([1, 1, 1])
+    with col_a:
+        st.error("🗑️ EXCLUIR ATIVO")
         lista_ativos = [""] + sorted(st.session_state.df_base["Ativo"].tolist())
-        ticker_del = st.selectbox("Selecione o ativo para remover:", lista_ativos)
-        if st.button("🗑️ Remover Ativo"):
+        ticker_del = st.selectbox("Selecione o ativo:", lista_ativos, key="del_box")
+        if st.button("Remover", use_container_width=True):
             if ticker_del != "":
                 st.session_state.df_base = st.session_state.df_base[st.session_state.df_base["Ativo"] != ticker_del]
                 st.rerun()
-    with col2:
-        c1, c2, c3 = st.columns(3)
-        novo_t = c1.text_input("Ticker (Ex: BBAS3)")
-        novo_q = c2.number_input("Qtd", min_value=1)
-        novo_p = c3.number_input("PM (R$)", min_value=0.01)
-        if st.button("➕ Adicionar Ativo"):
+                
+    with col_b:
+        st.success("➕ NOVA COMPRA / ATIVO")
+        novo_t = st.text_input("Ticker (Ex: BBAS3)")
+        c_q, c_p = st.columns(2)
+        novo_q = c_q.number_input("Qtd", min_value=1)
+        novo_p = c_p.number_input("PM (R$)", min_value=0.01)
+        if st.button("Adicionar à Base", use_container_width=True):
             if novo_t != "":
-                nova_linha = pd.DataFrame([{"Ativo": novo_t.upper(), "Quantidade": float(novo_q), "Preço Médio": float(novo_p), "Data 1º Aporte": pd.Timestamp.now().date()}])
+                nova_linha = pd.DataFrame([{"Ativo": novo_t.upper(), "Quantidade": float(novo_q), "Preço Médio": float(novo_p), "Data Média": pd.Timestamp.now().date()}])
                 st.session_state.df_base = pd.concat([st.session_state.df_base, nova_linha], ignore_index=True)
                 st.rerun()
+                
+    with col_c:
+        st.info("💾 SALVAR ESTADO ATUAL")
+        st.markdown("Baixe este arquivo para não perder as suas edições de hoje.")
+        csv_backup = st.session_state.df_base.to_csv(index=False, sep=';', encoding='utf-8-sig')
+        st.download_button(label="📥 Baixar Banco de Dados (.csv)", data=csv_backup, file_name="Banco_de_Dados_Carteira.csv", mime="text/csv", use_container_width=True)
 
+    st.write("---")
     df_editado = st.data_editor(
         st.session_state.df_base, use_container_width=True, hide_index=True,
         column_config={
             "Ativo": st.column_config.TextColumn(disabled=True),
             "Quantidade": st.column_config.NumberColumn(min_value=0.0),
             "Preço Médio": st.column_config.NumberColumn(format="R$ %.2f", min_value=0.0),
-            "Data 1º Aporte": st.column_config.DateColumn("Data 1º Aporte (Ajuste Aqui)", format="DD/MM/YYYY")
+            "Data Média": st.column_config.DateColumn("Data Média Ponderada", format="DD/MM/YYYY")
         }
     )
 
@@ -194,7 +217,7 @@ if not st.session_state.df_base.empty:
         for i, row in df_editado.iterrows():
             ticker = str(row['Ativo']).strip().upper()
             try:
-                data_compra = pd.to_datetime(row['Data 1º Aporte']) if pd.notna(row['Data 1º Aporte']) else pd.Timestamp.now()
+                data_compra = pd.to_datetime(row['Data Média']) if pd.notna(row['Data Média']) else pd.Timestamp.now()
                 
                 acao = yf.Ticker(f"{ticker}.SA")
                 hist = acao.history(period="1d")
@@ -225,7 +248,7 @@ if not st.session_state.df_base.empty:
             
         st.session_state.dados_mercado = dados_mercado
         st.session_state.df_simul = pd.DataFrame(linhas_simul_iniciais)
-        st.success("Dados de Mercado Sincronizados!")
+        st.success("Análise Matemática Concluída!")
 
     # ==========================================
     # 4. PAINEL DE RELATÓRIOS (4 ABAS)
@@ -241,7 +264,7 @@ if not st.session_state.df_base.empty:
             
             linhas_perf.append({
                 "Ativo": t, "Qtd": int(dm['Qtd']), "Preço Médio": dm['PM'], "Preço Atual": dm['Preço Atual'],
-                "Meses": int(dm['Meses']),
+                "Meses (Média)": int(dm['Meses']),
                 "Total Div. (R$)": dm['Div_Total'], "DY on Cost": yoc,
                 "Evolução s/ Div": var_s_div, "Evolução c/ Div": var_c_div,
                 "IPCA Acum.": dm['IPCA'], "CDI Acum.": dm['CDI']
@@ -250,9 +273,9 @@ if not st.session_state.df_base.empty:
 
         st.write("---")
         st.download_button(
-            label="📥 Baixar Relatório em Excel",
+            label="📥 Exportar Relatório Executivo (Excel com Gráficos)",
             data=gerar_excel_premium(df_perf_final, st.session_state.df_simul),
-            file_name="Analise_CNPI_Carteira.xlsx",
+            file_name="Relatorio_CNPI_Carteira.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
@@ -260,10 +283,9 @@ if not st.session_state.df_base.empty:
             "📈 Rentabilidade e YOC", 
             "💰 Método Bazin (Renda)", 
             "🏢 Método Graham (Valor)", 
-            "📊 Gráficos Interativos"
+            "📊 Análise Gráfica (Plotly)"
         ])
         
-        # --- ABA 1: RENTABILIDADE ---
         with tab1:
             st.dataframe(df_perf_final, use_container_width=True, hide_index=True, column_config={
                 "Preço Médio": st.column_config.NumberColumn(format="R$ %.2f"),
@@ -276,77 +298,48 @@ if not st.session_state.df_base.empty:
                 "CDI Acum.": st.column_config.NumberColumn(format="%.2f %%")
             })
 
-        # --- ABA 2: BAZIN ---
         with tab2:
-            st.markdown("### Método Décio Bazin (Foco em Renda Passiva)")
-            yield_desejado = st.number_input("Taxa de Risco - Yield Desejado (%):", value=6.0, min_value=0.1, step=0.5) / 100.0
+            st.markdown("### Método Décio Bazin")
+            yield_desejado = st.number_input("Taxa de Risco Exigida (%):", value=6.0, min_value=0.1, step=0.5) / 100.0
             
             df_bazin_view = st.session_state.df_simul[["Ativo", "Cotação Atual", "Div. Projetado (R$)"]].copy()
-            df_bazin_editado = st.data_editor(
-                df_bazin_view, use_container_width=True, hide_index=True,
-                disabled=["Ativo", "Cotação Atual"],
-                column_config={
-                    "Cotação Atual": st.column_config.NumberColumn(format="R$ %.2f"),
-                    "Div. Projetado (R$)": st.column_config.NumberColumn("Div. Projetado (R$)", format="R$ %.2f")
-                }
-            )
+            df_bazin_editado = st.data_editor(df_bazin_view, use_container_width=True, hide_index=True, disabled=["Ativo", "Cotação Atual"],
+                column_config={"Cotação Atual": st.column_config.NumberColumn(format="R$ %.2f"), "Div. Projetado (R$)": st.column_config.NumberColumn("Div. Projetado (R$)", format="R$ %.2f")})
             
             linhas_bazin = []
             for _, row in df_bazin_editado.iterrows():
-                t, cotacao = row['Ativo'], row['Cotação Atual']
-                div_proj = row['Div. Projetado (R$)']
-                
+                t, cotacao, div_proj = row['Ativo'], row['Cotação Atual'], row['Div. Projetado (R$)']
                 bazin = div_proj / yield_desejado if (div_proj > 0 and yield_desejado > 0) else np.nan
                 margem_b = ((bazin / cotacao) - 1) * 100 if (pd.notna(bazin) and cotacao > 0) else np.nan
                 linhas_bazin.append({"Ativo": t, "Cotação Atual": cotacao, "Preço Teto (Bazin)": bazin, "Margem de Segurança": margem_b})
                 
             st.dataframe(pd.DataFrame(linhas_bazin), use_container_width=True, hide_index=True, column_config={
-                "Cotação Atual": st.column_config.NumberColumn(format="R$ %.2f"),
-                "Preço Teto (Bazin)": st.column_config.NumberColumn(format="R$ %.2f"),
-                "Margem de Segurança": st.column_config.NumberColumn(format="%.2f %%")
-            })
+                "Cotação Atual": st.column_config.NumberColumn(format="R$ %.2f"), "Preço Teto (Bazin)": st.column_config.NumberColumn(format="R$ %.2f"), "Margem de Segurança": st.column_config.NumberColumn(format="%.2f %%")})
 
-        # --- ABA 3: GRAHAM ---
         with tab3:
-            st.markdown("### Método Benjamin Graham (Valor Intrínseco)")
-            st.warning("⚠️ O método de Graham não se aplica a FIIs ou a empresas com prejuízo contábil.")
-            
+            st.markdown("### Método Benjamin Graham")
             df_graham_view = st.session_state.df_simul[["Ativo", "Cotação Atual", "VPA (Contábil)", "LPA Projetado"]].copy()
-            df_graham_editado = st.data_editor(
-                df_graham_view, use_container_width=True, hide_index=True,
-                disabled=["Ativo", "Cotação Atual", "VPA (Contábil)"],
-                column_config={
-                    "Cotação Atual": st.column_config.NumberColumn(format="R$ %.2f"),
-                    "VPA (Contábil)": st.column_config.NumberColumn(format="R$ %.2f"),
-                    "LPA Projetado": st.column_config.NumberColumn("LPA Projetado (Editar)", format="R$ %.2f")
-                }
-            )
+            df_graham_editado = st.data_editor(df_graham_view, use_container_width=True, hide_index=True, disabled=["Ativo", "Cotação Atual", "VPA (Contábil)"],
+                column_config={"Cotação Atual": st.column_config.NumberColumn(format="R$ %.2f"), "VPA (Contábil)": st.column_config.NumberColumn(format="R$ %.2f"), "LPA Projetado": st.column_config.NumberColumn("LPA Projetado (Editar)", format="R$ %.2f")})
             
             linhas_graham = []
             for _, row in df_graham_editado.iterrows():
-                t, cotacao = row['Ativo'], row['Cotação Atual']
-                vpa, lpa_proj = row['VPA (Contábil)'], row['LPA Projetado']
-                
+                t, cotacao, vpa, lpa_proj = row['Ativo'], row['Cotação Atual'], row['VPA (Contábil)'], row['LPA Projetado']
                 graham = (22.5 * lpa_proj * vpa) ** 0.5 if (lpa_proj > 0 and vpa > 0) else np.nan
                 margem_g = ((graham / cotacao) - 1) * 100 if (pd.notna(graham) and cotacao > 0) else np.nan
                 linhas_graham.append({"Ativo": t, "Cotação Atual": cotacao, "Preço Justo (Graham)": graham, "Margem de Segurança": margem_g})
                 
             st.dataframe(pd.DataFrame(linhas_graham), use_container_width=True, hide_index=True, column_config={
-                "Cotação Atual": st.column_config.NumberColumn(format="R$ %.2f"),
-                "Preço Justo (Graham)": st.column_config.NumberColumn(format="R$ %.2f"),
-                "Margem de Segurança": st.column_config.NumberColumn(format="%.2f %%")
-            })
+                "Cotação Atual": st.column_config.NumberColumn(format="R$ %.2f"), "Preço Justo (Graham)": st.column_config.NumberColumn(format="R$ %.2f"), "Margem de Segurança": st.column_config.NumberColumn(format="%.2f %%")})
 
-        # --- ABA 4: GRÁFICOS INTERATIVOS ---
         with tab4:
-            st.markdown("### 1. Performance Global (Desde o 1º Aporte)")
+            st.markdown("### 1. Performance Global (Desde a Data Média Ponderada)")
             todos_ativos = df_perf_final['Ativo'].tolist()
-            ativos_selecionados = st.multiselect("Selecione os ativos para análise:", todos_ativos, default=todos_ativos[:6], key="ms_global")
+            ativos_selecionados = st.multiselect("Selecione os ativos para análise global:", todos_ativos, default=todos_ativos[:6], key="ms_global")
             
             if ativos_selecionados:
                 df_grafico = df_perf_final[df_perf_final['Ativo'].isin(ativos_selecionados)]
                 df_melt = df_grafico.melt(id_vars=["Ativo"], value_vars=["Evolução c/ Div", "CDI Acum.", "IPCA Acum."], var_name="Indicador", value_name="Rentabilidade")
-                
                 fig1 = px.bar(df_melt, x="Ativo", y="Rentabilidade", color="Indicador", barmode="group", text="Rentabilidade")
                 fig1.update_traces(texttemplate='%{text:.2f}%', textposition='outside')
                 fig1.update_layout(yaxis_ticksuffix=" %", margin=dict(t=30))
@@ -354,59 +347,41 @@ if not st.session_state.df_base.empty:
 
             st.divider()
             
-            # NOVO: ANÁLISE DE PERÍODO ESPECÍFICO
-            st.markdown("### 2. Análise de Período Específico")
-            st.markdown("Defina uma data de início e de fim para isolar o ganho de capital e proventos deste intervalo específico.")
+            st.markdown("### 2. Análise de Período Específico (Janela Tática)")
+            st.markdown("Verifique a rentabilidade exata e os dividendos pagos em uma janela de tempo específica.")
             
             c_dt1, c_dt2, c_btn = st.columns([2, 2, 2])
             with c_dt1: dt_inicio_custom = st.date_input("Data de Início", pd.Timestamp.now().date() - pd.DateOffset(years=1))
             with c_dt2: dt_fim_custom = st.date_input("Data de Fim", pd.Timestamp.now().date())
             
-            if c_btn.button("Gerar Análise do Período"):
-                if not ativos_selecionados:
-                    st.warning("Selecione os ativos na caixa acima primeiro.")
+            if c_btn.button("Gerar Análise do Período", use_container_width=True):
+                if not ativos_selecionados: st.warning("Selecione os ativos na caixa acima.")
                 else:
-                    with st.spinner("Buscando cotações históricas na B3..."):
+                    with st.spinner("Conectando à bolsa para o período específico..."):
                         linhas_custom = []
                         df_macro = carregar_macro()
-                        
-                        # O YFinance exige que a data de término tenha +1 dia para incluir a própria data na busca
                         dt_fim_yf = dt_fim_custom + pd.Timedelta(days=1)
                         
                         for t in ativos_selecionados:
                             try:
                                 acao = yf.Ticker(f"{t}.SA")
                                 hist = acao.history(start=dt_inicio_custom.strftime('%Y-%m-%d'), end=dt_fim_yf.strftime('%Y-%m-%d'))
-                                
                                 if not hist.empty:
-                                    preco_ini = float(hist['Close'].iloc[0])
-                                    preco_fim = float(hist['Close'].iloc[-1])
-                                    
+                                    preco_ini, preco_fim = float(hist['Close'].iloc[0]), float(hist['Close'].iloc[-1])
                                     divs = acao.dividends
-                                    divs_filtrado = divs[(divs.index.tz_localize(None) >= pd.to_datetime(dt_inicio_custom)) & 
-                                                         (divs.index.tz_localize(None) <= pd.to_datetime(dt_fim_custom))]
-                                    divs_periodo = float(divs_filtrado.sum())
+                                    divs_periodo = float(divs[(divs.index.tz_localize(None) >= pd.to_datetime(dt_inicio_custom)) & (divs.index.tz_localize(None) <= pd.to_datetime(dt_fim_custom))].sum())
                                     
-                                    # Rentabilidade do período exato
                                     evolucao_custom = (((preco_fim + divs_periodo) / preco_ini) - 1) * 100
-                                    
                                     cdi_custom, ipca_custom = calcular_macro_acumulado(df_macro, pd.to_datetime(dt_inicio_custom), pd.to_datetime(dt_fim_custom))
                                     
-                                    linhas_custom.append({
-                                        "Ativo": t,
-                                        "Retorno Total (%)": evolucao_custom,
-                                        "CDI Período": cdi_custom,
-                                        "IPCA Período": ipca_custom
-                                    })
+                                    linhas_custom.append({"Ativo": t, "Retorno Total (%)": evolucao_custom, "CDI Período": cdi_custom, "IPCA Período": ipca_custom})
                             except: pass
                         
                         if linhas_custom:
                             df_custom = pd.DataFrame(linhas_custom)
                             df_custom_melt = df_custom.melt(id_vars=["Ativo"], value_vars=["Retorno Total (%)", "CDI Período", "IPCA Período"], var_name="Indicador", value_name="Rentabilidade")
-                            
                             fig_custom = px.bar(df_custom_melt, x="Ativo", y="Rentabilidade", color="Indicador", barmode="group", text="Rentabilidade")
                             fig_custom.update_traces(texttemplate='%{text:.2f}%', textposition='outside')
                             fig_custom.update_layout(yaxis_ticksuffix=" %", margin=dict(t=30))
                             st.plotly_chart(fig_custom, use_container_width=True)
-                        else:
-                            st.error("Não foi possível obter os dados históricos para este período.")
+                        else: st.error("Sem histórico para o período.")
