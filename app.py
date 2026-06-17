@@ -83,7 +83,7 @@ def gerar_excel_premium(df_perf, df_val):
         chart.type, chart.style = "col", 13
         chart.title, chart.y_axis.title = "Retorno Total vs CDI e IPCA", "Rentabilidade (%)"
         
-        dados_grafico = Reference(ws, min_col=12, min_row=1, max_col=14, max_row=len(df_p)+1)
+        dados_grafico = Reference(ws, min_col=13, min_row=1, max_col=15, max_row=len(df_p)+1)
         categorias = Reference(ws, min_col=1, min_row=2, max_row=len(df_p)+1)
         
         chart.add_data(dados_grafico, titles_from_data=True)
@@ -250,7 +250,7 @@ if not st.session_state.df_base.empty:
         st.success("Análise Matemática Concluída!")
 
     # ==========================================
-    # 4. PAINEL DE RELATÓRIOS E GRÁFICOS
+    # 4. PAINEL DE RELATÓRIOS (4 ABAS)
     # ==========================================
     if st.session_state.dados_mercado:
         linhas_perf = []
@@ -347,7 +347,7 @@ if not st.session_state.df_base.empty:
                 "Cotação Atual": st.column_config.NumberColumn(format="R$ %.2f"), "Preço Justo (Graham)": st.column_config.NumberColumn(format="R$ %.2f"), "Margem de Segurança": st.column_config.NumberColumn(format="%.2f %%")})
 
         with tab4:
-            st.markdown("### 1. Performance Global (Individualizada por Ativo)")
+            st.markdown("### 1. Performance Global (Desde a Data Média Ponderada)")
             todos_ativos = df_perf_final['Ativo'].tolist()
             
             c_sel, c_ind = st.columns([2, 1])
@@ -355,18 +355,22 @@ if not st.session_state.df_base.empty:
             with c_ind: ind_selecionados = st.multiselect("Indicadores:", ["Evolução c/ Div", "CDI Acum.", "IPCA Acum."], default=["Evolução c/ Div", "CDI Acum.", "IPCA Acum."], key="ind_global")
             
             if ativos_selecionados and ind_selecionados:
-                df_grafico = df_perf_final[df_perf_final['Ativo'].isin(ativos_selecionados)]
-                df_melt = df_grafico.melt(id_vars=["Ativo", "Data Média"], value_vars=ind_selecionados, var_name="Indicador", value_name="Rentabilidade")
+                df_grafico = df_perf_final[df_perf_final['Ativo'].isin(ativos_selecionados)].copy()
                 
-                # ADICIONANDO A DATA AO TÍTULO DINAMICAMENTE QUANDO 1 ATIVO É SELECIONADO
-                if len(ativos_selecionados) == 1:
-                    data_ref = df_grafico.iloc[0]['Data Média']
-                    titulo_graf1 = f"Performance Desde: {data_ref} até Hoje"
-                else:
-                    titulo_graf1 = "Performance Baseada nas Datas Médias de Cada Ativo"
-                    
-                fig1 = px.bar(df_melt, x="Ativo", y="Rentabilidade", color="Indicador", barmode="group", text="Rentabilidade", title=titulo_graf1)
-                fig1.update_traces(texttemplate='%{text:.2f}%', textposition='outside')
+                # ADICIONANDO O PERÍODO NA BASE DE DADOS PARA APARECER NO MOUSE (HOVER)
+                df_grafico['Período'] = df_grafico['Data Média'].astype(str) + " até Hoje"
+                
+                df_melt = df_grafico.melt(id_vars=["Ativo", "Período"], value_vars=ind_selecionados, var_name="Indicador", value_name="Rentabilidade")
+                
+                titulo_graf1 = "Performance Baseada nas Datas Médias de Cada Ativo"
+                fig1 = px.bar(df_melt, x="Ativo", y="Rentabilidade", color="Indicador", barmode="group", text="Rentabilidade", hover_data=["Período"], title=titulo_graf1)
+                
+                # FORMATAÇÃO DO CARTÃO FLUTUANTE (TOOLTIP)
+                fig1.update_traces(
+                    texttemplate='%{text:.2f}%', 
+                    textposition='outside',
+                    hovertemplate='<b>%{x}</b> (%{data.name})<br>Período: %{customdata[0]}<br>Rentabilidade: %{y:.2f}%<extra></extra>'
+                )
                 fig1.update_layout(yaxis_ticksuffix=" %", margin=dict(t=40))
                 st.plotly_chart(fig1, use_container_width=True)
             elif not ind_selecionados:
@@ -407,12 +411,22 @@ if not st.session_state.df_base.empty:
                         
                         if linhas_custom:
                             df_custom = pd.DataFrame(linhas_custom)
-                            df_custom_melt = df_custom.melt(id_vars=["Ativo"], value_vars=ind_custom, var_name="Indicador", value_name="Rentabilidade")
                             
-                            # TÍTULO DINÂMICO PARA O PERÍODO ESPECÍFICO
+                            # ADICIONANDO O PERÍODO ESPECÍFICO PARA O MOUSE (HOVER)
+                            periodo_str = f"{dt_inicio_custom.strftime('%d/%m/%Y')} a {dt_fim_custom.strftime('%d/%m/%Y')}"
+                            df_custom['Período'] = periodo_str
+                            
+                            df_custom_melt = df_custom.melt(id_vars=["Ativo", "Período"], value_vars=ind_custom, var_name="Indicador", value_name="Rentabilidade")
+                            
                             titulo_graf2 = f"Performance no Período: {dt_inicio_custom.strftime('%d/%m/%Y')} a {dt_fim_custom.strftime('%d/%m/%Y')}"
-                            fig_custom = px.bar(df_custom_melt, x="Ativo", y="Rentabilidade", color="Indicador", barmode="group", text="Rentabilidade", title=titulo_graf2)
-                            fig_custom.update_traces(texttemplate='%{text:.2f}%', textposition='outside')
+                            fig_custom = px.bar(df_custom_melt, x="Ativo", y="Rentabilidade", color="Indicador", barmode="group", text="Rentabilidade", hover_data=["Período"], title=titulo_graf2)
+                            
+                            # FORMATAÇÃO DO CARTÃO FLUTUANTE (TOOLTIP)
+                            fig_custom.update_traces(
+                                texttemplate='%{text:.2f}%', 
+                                textposition='outside',
+                                hovertemplate='<b>%{x}</b> (%{data.name})<br>Período: %{customdata[0]}<br>Rentabilidade: %{y:.2f}%<extra></extra>'
+                            )
                             fig_custom.update_layout(yaxis_ticksuffix=" %", margin=dict(t=40))
                             st.plotly_chart(fig_custom, use_container_width=True)
                         else: st.error("Sem histórico para o período.")
