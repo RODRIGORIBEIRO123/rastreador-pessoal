@@ -187,7 +187,6 @@ if arquivo and st.session_state.df_base.empty:
 # ==========================================
 if not st.session_state.df_base.empty:
     st.markdown("### 2. Controle do Banco de Dados")
-    st.markdown("💡 **Dica de Gestor:** A coluna de Ativos agora é editável. Se quiser mesclar um ativo antigo com um novo (ex: GALG11 -> GARE11), basta digitar o novo nome por cima na tabela abaixo. O sistema fundirá os dois automaticamente ao processar.")
     
     col_a, col_b, col_c = st.columns([1, 1, 1])
     with col_a:
@@ -213,7 +212,6 @@ if not st.session_state.df_base.empty:
                 
     with col_c:
         st.info("💾 SALVAR ESTADO ATUAL")
-        st.markdown("Baixe este arquivo para não perder as suas edições de hoje.")
         csv_backup = st.session_state.df_base.to_csv(index=False, sep=';', encoding='utf-8-sig')
         st.download_button(label="📥 Baixar Banco de Dados (.csv)", data=csv_backup, file_name="Banco_de_Dados_Carteira.csv", mime="text/csv", use_container_width=True)
 
@@ -242,35 +240,34 @@ if not st.session_state.df_base.empty:
             ticker = str(row['Ativo']).strip().upper()
             data_compra = pd.to_datetime(row['Data Média']) if pd.notna(row['Data Média']) else pd.Timestamp.now()
             
-            # Valores Padrão (Fallback Seguro)
-            preco_atual = float(row['Preço Médio'])
+            preco_atual = float(row['Preço Médio']) # Valor Padrão caso bolsa falhe
             divs_total, divs_12m, lpa, vpa = 0.0, 0.0, 0.0, 0.0
             
             try:
                 acao = yf.Ticker(f"{ticker}.SA")
                 
-                # BLOCO 1: Cotação (Isolado para não quebrar a tela)
-                try:
+                try: # Cotação
                     hist = acao.history(period="1d")
                     if not hist.empty: preco_atual = float(hist['Close'].iloc[-1])
                 except: pass
                 
-                # BLOCO 2: Dividendos (Isolado)
-                try:
+                try: # Dividendos
                     divs = acao.dividends
                     divs_total = float(divs[divs.index.tz_localize(None) >= data_compra].sum() * row['Quantidade'])
                     divs_12m = float(divs[divs.index.tz_localize(None) >= data_12m].sum())
                 except: pass
                 
-                # BLOCO 3: Fundamentos (Isolado para não afetar os cálculos acima se o FII falhar)
-                try:
+                try: # Fundamentos
                     info = acao.info
-                    lpa = float(info.get('trailingEps') or info.get('forwardEps') or 0.0)
-                    vpa = float(info.get('bookValue') or 0.0)
-                    if vpa == 0.0 and info.get('priceToBook') and preco_atual > 0:
-                        vpa = preco_atual / float(info.get('priceToBook'))
+                    if isinstance(info, dict):
+                        lpa = float(info.get('trailingEps') or info.get('forwardEps') or 0.0)
+                        vpa = float(info.get('bookValue') or 0.0)
+                        # Busca agressiva do VPA usando o Price To Book se VPA falhar
+                        p_vp = info.get('priceToBook')
+                        if vpa == 0.0 and p_vp and preco_atual > 0:
+                            try: vpa = preco_atual / float(p_vp)
+                            except: pass
                 except: pass
-                
             except: pass
 
             cdi, ipca = calcular_macro_acumulado(df_macro, data_compra)
@@ -359,19 +356,23 @@ if not st.session_state.df_base.empty:
             yield_desejado = st.number_input("Taxa de Risco Exigida (%):", value=6.0, min_value=0.1, step=0.5) / 100.0
             
             df_bazin_view = st.session_state.df_simul[["Ativo", "Cotação Atual", "Div. Projetado (R$)"]].copy()
-            df_bazin_editado = st.data_editor(
-                df_bazin_view, use_container_width=True, hide_index=True, disabled=["Ativo", "Cotação Atual"],
+            df_bazin_editado = st.data_editor(df_bazin_view, use_container_width=True, hide_index=True, disabled=["Ativo", "Cotação Atual"],
                 column_config={"Cotação Atual": st.column_config.NumberColumn(format="R$ %.2f"), "Div. Projetado (R$)": st.column_config.NumberColumn("Div. Projetado (R$)", format="R$ %.2f")},
-                key="edit_bazin" 
-            )
+                key="edit_bazin")
             
+            # Ancoragem firme de memória Bazin
             st.session_state.df_simul["Div. Projetado (R$)"] = df_bazin_editado["Div. Projetado (R$)"]
             
             linhas_bazin = []
             for _, row in df_bazin_editado.iterrows():
-                t, cotacao, div_proj = row['Ativo'], row['Cotação Atual'], row['Div. Projetado (R$)']
-                bazin = div_proj / yield_desejado if (div_proj > 0 and yield_desejado > 0) else np.nan
-                margem_b = ((bazin / cotacao) - 1) * 100 if (pd.notna(bazin) and cotacao > 0) else np.nan
+                t = str(row['Ativo'])
+                try: cotacao = float(row['Cotação Atual'])
+                except: cotacao = 0.0
+                try: div_proj = float(row['Div. Projetado (R$)'])
+                except: div_proj = 0.0
+                
+                bazin = (div_proj / yield_desejado) if (div_proj > 0 and yield_desejado > 0) else 0.0
+                margem_b = (((bazin / cotacao) - 1) * 100) if (bazin > 0 and cotacao > 0) else 0.0
                 linhas_bazin.append({"Ativo": t, "Cotação Atual": cotacao, "Preço Teto (Bazin)": bazin, "Margem de Segurança": margem_b})
                 
             st.dataframe(pd.DataFrame(linhas_bazin), use_container_width=True, hide_index=True, column_config={
@@ -380,20 +381,27 @@ if not st.session_state.df_base.empty:
         with tab3:
             st.markdown("### Método Benjamin Graham")
             df_graham_view = st.session_state.df_simul[["Ativo", "Cotação Atual", "VPA (Contábil)", "LPA Projetado"]].copy()
-            df_graham_editado = st.data_editor(
-                df_graham_view, use_container_width=True, hide_index=True, disabled=["Ativo", "Cotação Atual"],
+            df_graham_editado = st.data_editor(df_graham_view, use_container_width=True, hide_index=True, disabled=["Ativo", "Cotação Atual"],
                 column_config={"Cotação Atual": st.column_config.NumberColumn(format="R$ %.2f"), "VPA (Contábil)": st.column_config.NumberColumn("VPA (Editar)", format="R$ %.2f"), "LPA Projetado": st.column_config.NumberColumn("LPA Projetado (Editar)", format="R$ %.2f")},
-                key="edit_graham"
-            )
+                key="edit_graham")
             
+            # Ancoragem firme de memória Graham
             st.session_state.df_simul["VPA (Contábil)"] = df_graham_editado["VPA (Contábil)"]
             st.session_state.df_simul["LPA Projetado"] = df_graham_editado["LPA Projetado"]
             
             linhas_graham = []
             for _, row in df_graham_editado.iterrows():
-                t, cotacao, vpa, lpa_proj = row['Ativo'], row['Cotação Atual'], row['VPA (Contábil)'], row['LPA Projetado']
-                graham = (22.5 * lpa_proj * vpa) ** 0.5 if (lpa_proj > 0 and vpa > 0) else np.nan
-                margem_g = ((graham / cotacao) - 1) * 100 if (pd.notna(graham) and cotacao > 0) else np.nan
+                t = str(row['Ativo'])
+                try: cotacao = float(row['Cotação Atual'])
+                except: cotacao = 0.0
+                try: vpa = float(row['VPA (Contábil)'])
+                except: vpa = 0.0
+                try: lpa_proj = float(row['LPA Projetado'])
+                except: lpa_proj = 0.0
+                
+                # Blindagem contra VPA/LPA negativos (quebrando a matemática da raiz quadrada)
+                graham = (22.5 * lpa_proj * vpa) ** 0.5 if (lpa_proj > 0 and vpa > 0) else 0.0
+                margem_g = (((graham / cotacao) - 1) * 100) if (graham > 0 and cotacao > 0) else 0.0
                 linhas_graham.append({"Ativo": t, "Cotação Atual": cotacao, "Preço Justo (Graham)": graham, "Margem de Segurança": margem_g})
                 
             st.dataframe(pd.DataFrame(linhas_graham), use_container_width=True, hide_index=True, column_config={
