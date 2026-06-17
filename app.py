@@ -77,16 +77,20 @@ def gerar_excel_premium(df_perf, df_val):
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         df_p.to_excel(writer, sheet_name='Rentabilidade', index=False)
         df_v.to_excel(writer, sheet_name='Valuation_Bazin', index=False)
+        
         ws = writer.sheets['Rentabilidade']
         chart = BarChart()
         chart.type, chart.style = "col", 13
         chart.title, chart.y_axis.title = "Retorno Total vs CDI e IPCA", "Rentabilidade (%)"
-        dados_grafico = Reference(ws, min_col=9, min_row=1, max_col=11, max_row=len(df_p)+1)
+        
+        # Ajustado para as novas posições das colunas (Evol c/ Div = 12, IPCA = 13, CDI = 14)
+        dados_grafico = Reference(ws, min_col=12, min_row=1, max_col=14, max_row=len(df_p)+1)
         categorias = Reference(ws, min_col=1, min_row=2, max_row=len(df_p)+1)
+        
         chart.add_data(dados_grafico, titles_from_data=True)
         chart.set_categories(categorias)
         chart.height, chart.width = 15, 30
-        ws.add_chart(chart, "M2")
+        ws.add_chart(chart, "P2") # Movido mais para a direita para não tapar as novas colunas
     return output.getvalue()
 
 # ==========================================
@@ -100,14 +104,12 @@ if arquivo and st.session_state.df_base.empty:
         try:
             df = ler_arquivo_universal(arquivo)
             
-            # IDENTIFICA SE É UM BACKUP ANTERIOR
             if 'Data Média' in df.columns and 'Ativo' in df.columns:
                 df['Data Média'] = pd.to_datetime(df['Data Média'], errors='coerce').dt.date
                 st.session_state.df_base = df
                 st.success("✅ Banco de Dados Restaurado com Sucesso!")
                 st.rerun()
                 
-            # SE NÃO FOR BACKUP, PROCESSA A LÓGICA COMPLEXA DA B3
             else:
                 df['Data do Negócio'] = pd.to_datetime(df['Data do Negócio'], dayfirst=True, errors='coerce')
                 df['Quantidade'], df['Preço'], df['Valor'] = df['Quantidade'].apply(limpar_numero), df['Preço'].apply(limpar_numero), df['Valor'].apply(limpar_numero)
@@ -124,14 +126,12 @@ if arquivo and st.session_state.df_base.empty:
                         posicoes[ticker] = {'qtd': 0.0, 'valor': 0.0, 'soma_pesos': 0.0}
                         
                     if row['Tipo de Movimentação'] == 'Compra':
-                        # Se zerou a posição no passado, zera a memória de tempo
                         if posicoes[ticker]['qtd'] == 0:
                             posicoes[ticker]['soma_pesos'] = 0.0
                             
                         posicoes[ticker]['qtd'] += qtd
                         posicoes[ticker]['valor'] += valor
                         
-                        # CÁLCULO DO PRAZO MÉDIO PONDERADO (DURATION)
                         ts = pd.Timestamp(data).timestamp()
                         posicoes[ticker]['soma_pesos'] += (ts * valor)
                         
@@ -258,16 +258,27 @@ if not st.session_state.df_base.empty:
         for t, dm in st.session_state.dados_mercado.items():
             investido = dm['Qtd'] * dm['PM']
             saldo = dm['Qtd'] * dm['Preço Atual']
+            resultado = saldo - investido
+            
             var_s_div = ((saldo / investido) - 1) * 100 if investido > 0 else np.nan
             var_c_div = (((saldo + dm['Div_Total']) / investido) - 1) * 100 if investido > 0 else np.nan
             yoc = (dm['Div_Total'] / investido) * 100 if investido > 0 else np.nan
             
             linhas_perf.append({
-                "Ativo": t, "Qtd": int(dm['Qtd']), "Preço Médio": dm['PM'], "Preço Atual": dm['Preço Atual'],
+                "Ativo": t, 
+                "Qtd": int(dm['Qtd']), 
+                "Preço Médio": dm['PM'], 
+                "Preço Atual": dm['Preço Atual'],
+                "Total Investido": investido,
+                "Saldo Atual": saldo,
+                "Resultado (R$)": resultado,
                 "Meses (Média)": int(dm['Meses']),
-                "Total Div. (R$)": dm['Div_Total'], "DY on Cost": yoc,
-                "Evolução s/ Div": var_s_div, "Evolução c/ Div": var_c_div,
-                "IPCA Acum.": dm['IPCA'], "CDI Acum.": dm['CDI']
+                "Total Div. (R$)": dm['Div_Total'], 
+                "DY on Cost": yoc,
+                "Evolução s/ Div": var_s_div, 
+                "Evolução c/ Div": var_c_div,
+                "IPCA Acum.": dm['IPCA'], 
+                "CDI Acum.": dm['CDI']
             })
         df_perf_final = pd.DataFrame(linhas_perf)
 
@@ -290,6 +301,9 @@ if not st.session_state.df_base.empty:
             st.dataframe(df_perf_final, use_container_width=True, hide_index=True, column_config={
                 "Preço Médio": st.column_config.NumberColumn(format="R$ %.2f"),
                 "Preço Atual": st.column_config.NumberColumn(format="R$ %.2f"),
+                "Total Investido": st.column_config.NumberColumn(format="R$ %.2f"),
+                "Saldo Atual": st.column_config.NumberColumn(format="R$ %.2f"),
+                "Resultado (R$)": st.column_config.NumberColumn(format="R$ %.2f"),
                 "Total Div. (R$)": st.column_config.NumberColumn(format="R$ %.2f"),
                 "DY on Cost": st.column_config.NumberColumn(format="%.2f %%"),
                 "Evolução s/ Div": st.column_config.NumberColumn(format="%.2f %%"),
