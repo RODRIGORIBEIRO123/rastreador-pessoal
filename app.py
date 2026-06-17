@@ -9,10 +9,23 @@ from openpyxl.chart import BarChart, Reference
 import plotly.express as px
 
 # ==========================================
-# 1. CONFIGURAÇÃO E MEMÓRIA
+# 1. CONFIGURAÇÃO, MEMÓRIA E DICIONÁRIOS
 # ==========================================
 st.set_page_config(page_title="Terminal de Gestão CNPI", layout="wide")
 st.title("📊 Terminal de Gestão Profissional")
+
+# Dicionário Inteligente de Eventos Corporativos (Pode adicionar mais no futuro)
+MAPEAMENTO_TICKERS = {
+    "GALG11": "GARE11",
+    "SOMA3": "ALOS3",
+    "ARZZ3": "ALOS3",
+    "VVAR3": "BHIA3",
+    "VIIA3": "BHIA3",
+    "BRML3": "ALSO3",
+    "BBRK11": "BRCR11",
+    "HCTR11": "TRXD11", # Exemplo de fundo que mudou
+    "TORD11": "TRXD11"
+}
 
 if 'df_base' not in st.session_state: st.session_state.df_base = pd.DataFrame(columns=["Ativo", "Quantidade", "Preço Médio", "Data Média"])
 if 'dados_mercado' not in st.session_state: st.session_state.dados_mercado = {}
@@ -35,11 +48,6 @@ def calcular_macro_acumulado(df_macro, data_inicio, data_fim=None):
         return cdi_acum, ipca_acum
     except: return 0.0, 0.0
 
-def calcular_meses(data_inicio):
-    if pd.isna(data_inicio): return 0
-    hoje = pd.Timestamp.now()
-    return int((hoje.year - data_inicio.year) * 12 + (hoje.month - data_inicio.month))
-
 def ignorar_ativo(ticker):
     if pd.isna(ticker): return True
     t = str(ticker).strip().upper()
@@ -59,6 +67,37 @@ def limpar_numero(x):
     elif ',' in x: x = x.replace(',', '.') 
     try: return float(x)
     except: return 0.0
+
+# NOVO MOTOR: Funde posições idênticas (mescla quantidades, PMs e Datas automaticamente)
+def consolidar_carteira(df):
+    if df.empty: return df
+    
+    # Aplica o mapa automático primeiro
+    df['Ativo'] = df['Ativo'].astype(str).str.strip().str.upper()
+    df['Ativo'] = df['Ativo'].apply(lambda x: MAPEAMENTO_TICKERS.get(x, x))
+    
+    linhas = []
+    for ativo, group in df.groupby('Ativo'):
+        qtd = float(group['Quantidade'].sum())
+        if qtd <= 0: continue
+        
+        valor_total = (group['Quantidade'] * group['Preço Médio']).sum()
+        pm = valor_total / qtd if qtd > 0 else 0
+        
+        soma_tempo = 0
+        for _, row in group.iterrows():
+            if pd.notna(row['Data Média']):
+                peso = row['Quantidade'] * row['Preço Médio']
+                ts = pd.Timestamp(row['Data Média']).timestamp()
+                soma_tempo += (ts * peso)
+                
+        if valor_total > 0 and soma_tempo > 0:
+            dt_media = pd.to_datetime(soma_tempo / valor_total, unit='s').date()
+        else:
+            dt_media = pd.Timestamp.now().date()
+            
+        linhas.append({"Ativo": ativo, "Quantidade": qtd, "Preço Médio": float(pm), "Data Média": dt_media})
+    return pd.DataFrame(linhas)
 
 def ler_arquivo_universal(arquivo_upload):
     if arquivo_upload.name.endswith('.csv'):
@@ -99,14 +138,15 @@ st.sidebar.header("1. Upload de Dados")
 arquivo = st.sidebar.file_uploader("Arquivo B3 ou Backup da Carteira", type=["xlsx", "csv"])
 
 if arquivo and st.session_state.df_base.empty:
-    with st.spinner("Analisando estrutura do arquivo..."):
+    with st.spinner("Analisando e Consolidando Dados..."):
         try:
             df = ler_arquivo_universal(arquivo)
             
             if 'Data Média' in df.columns and 'Ativo' in df.columns:
                 df['Data Média'] = pd.to_datetime(df['Data Média'], errors='coerce').dt.date
-                st.session_state.df_base = df
-                st.success("✅ Banco de Dados Restaurado com Sucesso!")
+                # Consolida caso haja atualizações de tickers pendentes no backup antigo
+                st.session_state.df_base = consolidar_carteira(df)
+                st.success("✅ Banco de Dados Restaurado e Consolidado!")
                 st.rerun()
                 
             else:
@@ -119,20 +159,20 @@ if arquivo and st.session_state.df_base.empty:
                     if ignorar_ativo(row['Código de Negociação']): continue
                     ticker = str(row['Código de Negociação']).strip().upper()
                     ticker = ticker[:-1] if ticker.endswith('F') else ticker
+                    
+                    # APLICAÇÃO DO MAPA AUTOMÁTICO NA EXTRAÇÃO DA B3
+                    ticker = MAPEAMENTO_TICKERS.get(ticker, ticker)
+                    
                     qtd, valor, data = row['Quantidade'], row['Valor'], row['Data do Negócio']
                     
                     if ticker not in posicoes: 
                         posicoes[ticker] = {'qtd': 0.0, 'valor': 0.0, 'soma_pesos': 0.0}
                         
                     if row['Tipo de Movimentação'] == 'Compra':
-                        if posicoes[ticker]['qtd'] == 0:
-                            posicoes[ticker]['soma_pesos'] = 0.0
-                            
+                        if posicoes[ticker]['qtd'] == 0: posicoes[ticker]['soma_pesos'] = 0.0
                         posicoes[ticker]['qtd'] += qtd
                         posicoes[ticker]['valor'] += valor
-                        
-                        ts = pd.Timestamp(data).timestamp()
-                        posicoes[ticker]['soma_pesos'] += (ts * valor)
+                        posicoes[ticker]['soma_pesos'] += (pd.Timestamp(data).timestamp() * valor)
                         
                     elif row['Tipo de Movimentação'] == 'Venda' and posicoes[ticker]['qtd'] > 0:
                         qtd_venda = min(qtd, posicoes[ticker]['qtd'])
@@ -145,24 +185,22 @@ if arquivo and st.session_state.df_base.empty:
                 ativos_limpos = []
                 for t, d in posicoes.items():
                     if d['qtd'] > 0 and d['valor'] > 0:
-                        avg_ts = d['soma_pesos'] / d['valor']
-                        data_proporcional = pd.to_datetime(avg_ts, unit='s')
+                        data_proporcional = pd.to_datetime(d['soma_pesos'] / d['valor'], unit='s')
                         ativos_limpos.append({
                             "Ativo": t, "Quantidade": float(d['qtd']), 
-                            "Preço Médio": float(d['valor'] / d['qtd']), 
-                            "Data Média": data_proporcional.date()
+                            "Preço Médio": float(d['valor'] / d['qtd']), "Data Média": data_proporcional.date()
                         })
-                st.session_state.df_base = pd.DataFrame(ativos_limpos)
+                st.session_state.df_base = consolidar_carteira(pd.DataFrame(ativos_limpos))
                 st.rerun()
         except Exception as e:
-            st.error(f"Erro ao processar arquivo. Verifique se é a planilha original da B3 ou o seu Backup. Detalhe: {e}")
+            st.error(f"Erro ao processar arquivo. Detalhe: {e}")
 
 # ==========================================
 # 3. INTERFACE DE PARAMETRIZAÇÃO E BACKUP
 # ==========================================
 if not st.session_state.df_base.empty:
     st.markdown("### 2. Controle do Banco de Dados")
-    st.markdown("Adicione novas compras, ajuste preços ou remova papéis antigos. **Utilize o botão de Backup para salvar o seu progresso no computador.**")
+    st.markdown("💡 **Dica de Gestor:** A coluna de Ativos agora é editável. Se quiser mesclar um ativo antigo com um novo (ex: GALG11 -> GARE11), basta digitar o novo nome por cima na tabela abaixo. O sistema fundirá os dois automaticamente ao processar.")
     
     col_a, col_b, col_c = st.columns([1, 1, 1])
     with col_a:
@@ -183,7 +221,7 @@ if not st.session_state.df_base.empty:
         if st.button("Adicionar à Base", use_container_width=True):
             if novo_t != "":
                 nova_linha = pd.DataFrame([{"Ativo": novo_t.upper(), "Quantidade": float(novo_q), "Preço Médio": float(novo_p), "Data Média": pd.Timestamp.now().date()}])
-                st.session_state.df_base = pd.concat([st.session_state.df_base, nova_linha], ignore_index=True)
+                st.session_state.df_base = consolidar_carteira(pd.concat([st.session_state.df_base, nova_linha], ignore_index=True))
                 st.rerun()
                 
     with col_c:
@@ -193,10 +231,12 @@ if not st.session_state.df_base.empty:
         st.download_button(label="📥 Baixar Banco de Dados (.csv)", data=csv_backup, file_name="Banco_de_Dados_Carteira.csv", mime="text/csv", use_container_width=True)
 
     st.write("---")
+    
+    # ATUALIZADO: Coluna "Ativo" agora está destravada (disabled=False)
     df_editado = st.data_editor(
         st.session_state.df_base, use_container_width=True, hide_index=True,
         column_config={
-            "Ativo": st.column_config.TextColumn(disabled=True),
+            "Ativo": st.column_config.TextColumn("Ativo (Editável)", disabled=False),
             "Quantidade": st.column_config.NumberColumn(min_value=0.0),
             "Preço Médio": st.column_config.NumberColumn(format="R$ %.2f", min_value=0.0),
             "Data Média": st.column_config.DateColumn("Data Média Ponderada", format="DD/MM/YYYY")
@@ -204,16 +244,18 @@ if not st.session_state.df_base.empty:
     )
 
     if st.button("🚀 Processar Conexão com o Mercado", type="primary"):
-        st.session_state.df_base = df_editado 
+        # Se o usuário alterou um ticker na tabela, nós consolidamos os dados primeiro!
+        st.session_state.df_base = consolidar_carteira(df_editado) 
+        
         df_macro = carregar_macro()
         progresso = st.progress(0)
-        total = len(df_editado)
+        total = len(st.session_state.df_base)
         data_12m = pd.Timestamp.now() - pd.DateOffset(years=1)
         
         dados_mercado = {}
         linhas_simul_iniciais = []
 
-        for i, row in df_editado.iterrows():
+        for i, row in st.session_state.df_base.iterrows():
             ticker = str(row['Ativo']).strip().upper()
             try:
                 data_compra = pd.to_datetime(row['Data Média']) if pd.notna(row['Data Média']) else pd.Timestamp.now()
@@ -232,7 +274,7 @@ if not st.session_state.df_base.empty:
                 preco_atual, divs_total, divs_12m, lpa, vpa = float(row['Preço Médio']), 0.0, 0.0, 0.0, 0.0
 
             cdi, ipca = calcular_macro_acumulado(df_macro, data_compra)
-            meses_investido = calcular_meses(data_compra)
+            meses_investido = int((pd.Timestamp.now().year - data_compra.year) * 12 + (pd.Timestamp.now().month - data_compra.month))
             
             dados_mercado[ticker] = {
                 "Qtd": float(row['Quantidade']), "PM": float(row['Preço Médio']), "Data": data_compra,
@@ -247,7 +289,7 @@ if not st.session_state.df_base.empty:
             
         st.session_state.dados_mercado = dados_mercado
         st.session_state.df_simul = pd.DataFrame(linhas_simul_iniciais)
-        st.success("Análise Matemática Concluída!")
+        st.success("Análise Matemática Concluída e Posições Fundidas!")
 
     # ==========================================
     # 4. PAINEL DE RELATÓRIOS (4 ABAS)
@@ -347,7 +389,7 @@ if not st.session_state.df_base.empty:
                 "Cotação Atual": st.column_config.NumberColumn(format="R$ %.2f"), "Preço Justo (Graham)": st.column_config.NumberColumn(format="R$ %.2f"), "Margem de Segurança": st.column_config.NumberColumn(format="%.2f %%")})
 
         with tab4:
-            st.markdown("### 1. Performance Global (Desde a Data Média Ponderada)")
+            st.markdown("### 1. Performance Global (Individualizada por Ativo)")
             todos_ativos = df_perf_final['Ativo'].tolist()
             
             c_sel, c_ind = st.columns([2, 1])
@@ -356,21 +398,14 @@ if not st.session_state.df_base.empty:
             
             if ativos_selecionados and ind_selecionados:
                 df_grafico = df_perf_final[df_perf_final['Ativo'].isin(ativos_selecionados)].copy()
-                
-                # ADICIONANDO O PERÍODO NA BASE DE DADOS PARA APARECER NO MOUSE (HOVER)
                 df_grafico['Período'] = df_grafico['Data Média'].astype(str) + " até Hoje"
                 
                 df_melt = df_grafico.melt(id_vars=["Ativo", "Período"], value_vars=ind_selecionados, var_name="Indicador", value_name="Rentabilidade")
                 
-                titulo_graf1 = "Performance Baseada nas Datas Médias de Cada Ativo"
+                titulo_graf1 = f"Performance Desde: {df_grafico.iloc[0]['Data Média']} até Hoje" if len(ativos_selecionados) == 1 else "Performance Baseada nas Datas Médias de Cada Ativo"
                 fig1 = px.bar(df_melt, x="Ativo", y="Rentabilidade", color="Indicador", barmode="group", text="Rentabilidade", hover_data=["Período"], title=titulo_graf1)
                 
-                # FORMATAÇÃO DO CARTÃO FLUTUANTE (TOOLTIP)
-                fig1.update_traces(
-                    texttemplate='%{text:.2f}%', 
-                    textposition='outside',
-                    hovertemplate='<b>%{x}</b> (%{data.name})<br>Período: %{customdata[0]}<br>Rentabilidade: %{y:.2f}%<extra></extra>'
-                )
+                fig1.update_traces(texttemplate='%{text:.2f}%', textposition='outside', hovertemplate='<b>%{x}</b> (%{data.name})<br>Período: %{customdata[0]}<br>Rentabilidade: %{y:.2f}%<extra></extra>')
                 fig1.update_layout(yaxis_ticksuffix=" %", margin=dict(t=40))
                 st.plotly_chart(fig1, use_container_width=True)
             elif not ind_selecionados:
@@ -411,22 +446,13 @@ if not st.session_state.df_base.empty:
                         
                         if linhas_custom:
                             df_custom = pd.DataFrame(linhas_custom)
-                            
-                            # ADICIONANDO O PERÍODO ESPECÍFICO PARA O MOUSE (HOVER)
-                            periodo_str = f"{dt_inicio_custom.strftime('%d/%m/%Y')} a {dt_fim_custom.strftime('%d/%m/%Y')}"
-                            df_custom['Período'] = periodo_str
-                            
+                            df_custom['Período'] = f"{dt_inicio_custom.strftime('%d/%m/%Y')} a {dt_fim_custom.strftime('%d/%m/%Y')}"
                             df_custom_melt = df_custom.melt(id_vars=["Ativo", "Período"], value_vars=ind_custom, var_name="Indicador", value_name="Rentabilidade")
                             
                             titulo_graf2 = f"Performance no Período: {dt_inicio_custom.strftime('%d/%m/%Y')} a {dt_fim_custom.strftime('%d/%m/%Y')}"
                             fig_custom = px.bar(df_custom_melt, x="Ativo", y="Rentabilidade", color="Indicador", barmode="group", text="Rentabilidade", hover_data=["Período"], title=titulo_graf2)
                             
-                            # FORMATAÇÃO DO CARTÃO FLUTUANTE (TOOLTIP)
-                            fig_custom.update_traces(
-                                texttemplate='%{text:.2f}%', 
-                                textposition='outside',
-                                hovertemplate='<b>%{x}</b> (%{data.name})<br>Período: %{customdata[0]}<br>Rentabilidade: %{y:.2f}%<extra></extra>'
-                            )
+                            fig_custom.update_traces(texttemplate='%{text:.2f}%', textposition='outside', hovertemplate='<b>%{x}</b> (%{data.name})<br>Período: %{customdata[0]}<br>Rentabilidade: %{y:.2f}%<extra></extra>')
                             fig_custom.update_layout(yaxis_ticksuffix=" %", margin=dict(t=40))
                             st.plotly_chart(fig_custom, use_container_width=True)
                         else: st.error("Sem histórico para o período.")
