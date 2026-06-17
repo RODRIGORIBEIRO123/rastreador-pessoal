@@ -5,6 +5,7 @@ import yfinance as yf
 from bcb import sgs
 import re
 import io
+import requests
 from openpyxl.chart import BarChart, Reference
 import plotly.express as px
 
@@ -31,6 +32,31 @@ def carregar_macro():
         macro['CDI'], macro['IPCA'] = macro['CDI'] / 100, macro['IPCA'] / 100
         return macro
     except: return pd.DataFrame()
+
+# 🛡️ MOTOR DE DADOS CONTÁBEIS (FUNDAMENTUS BRASIL)
+@st.cache_data(ttl=86400)
+def obter_fundamentos_brasil():
+    try:
+        url = 'https://www.fundamentus.com.br/resultado.php'
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
+        res = requests.get(url, headers=headers, timeout=10)
+        df = pd.read_html(io.StringIO(res.text), decimal=',', thousands='.')[0]
+        
+        fundamentos = {}
+        for _, row in df.iterrows():
+            t = str(row['Papel']).strip().upper()
+            c = float(row['Cotação'])
+            pl = float(row['P/L'])
+            pvp = float(row['P/VP'])
+            
+            # Engenharia Reversa para achar VPA e LPA exatos
+            vpa = c / pvp if pvp > 0 else 0.0
+            lpa = c / pl if pl > 0 else 0.0
+            
+            fundamentos[t] = {'vpa': vpa, 'lpa': lpa}
+        return fundamentos
+    except:
+        return {}
 
 def calcular_macro_acumulado(df_macro, data_inicio, data_fim=None):
     if df_macro is None or df_macro.empty or pd.isna(data_inicio): return 0.0, 0.0
@@ -229,6 +255,7 @@ if not st.session_state.df_base.empty:
     if st.button("🚀 Processar Conexão com o Mercado", type="primary"):
         st.session_state.df_base = consolidar_carteira(df_editado) 
         df_macro = carregar_macro()
+        fundamentos_br = obter_fundamentos_brasil() # <--- O Motor Secundário Atuando
         progresso = st.progress(0)
         total = len(st.session_state.df_base)
         data_12m = pd.Timestamp.now() - pd.DateOffset(years=1)
@@ -240,35 +267,39 @@ if not st.session_state.df_base.empty:
             ticker = str(row['Ativo']).strip().upper()
             data_compra = pd.to_datetime(row['Data Média']) if pd.notna(row['Data Média']) else pd.Timestamp.now()
             
-            preco_atual = float(row['Preço Médio']) # Valor Padrão caso bolsa falhe
+            preco_atual = float(row['Preço Médio'])
             divs_total, divs_12m, lpa, vpa = 0.0, 0.0, 0.0, 0.0
             
             try:
                 acao = yf.Ticker(f"{ticker}.SA")
-                
-                try: # Cotação
+                try: 
                     hist = acao.history(period="1d")
                     if not hist.empty: preco_atual = float(hist['Close'].iloc[-1])
                 except: pass
-                
-                try: # Dividendos
+                try: 
                     divs = acao.dividends
                     divs_total = float(divs[divs.index.tz_localize(None) >= data_compra].sum() * row['Quantidade'])
                     divs_12m = float(divs[divs.index.tz_localize(None) >= data_12m].sum())
                 except: pass
-                
-                try: # Fundamentos
+            except: pass
+
+            # ==========================================
+            # PREENCHIMENTO INFALÍVEL DE FUNDAMENTOS
+            # ==========================================
+            if ticker in fundamentos_br:
+                vpa = fundamentos_br[ticker]['vpa']
+                lpa = fundamentos_br[ticker]['lpa']
+            else:
+                try: # Se for FII ou Ativo Estrangeiro, tenta o Yahoo como Fallback
                     info = acao.info
                     if isinstance(info, dict):
                         lpa = float(info.get('trailingEps') or info.get('forwardEps') or 0.0)
                         vpa = float(info.get('bookValue') or 0.0)
-                        # Busca agressiva do VPA usando o Price To Book se VPA falhar
                         p_vp = info.get('priceToBook')
                         if vpa == 0.0 and p_vp and preco_atual > 0:
                             try: vpa = preco_atual / float(p_vp)
                             except: pass
                 except: pass
-            except: pass
 
             cdi, ipca = calcular_macro_acumulado(df_macro, data_compra)
             meses_investido = calcular_meses(data_compra)
@@ -360,7 +391,6 @@ if not st.session_state.df_base.empty:
                 column_config={"Cotação Atual": st.column_config.NumberColumn(format="R$ %.2f"), "Div. Projetado (R$)": st.column_config.NumberColumn("Div. Projetado (R$)", format="R$ %.2f")},
                 key="edit_bazin")
             
-            # Ancoragem firme de memória Bazin
             st.session_state.df_simul["Div. Projetado (R$)"] = df_bazin_editado["Div. Projetado (R$)"]
             
             linhas_bazin = []
@@ -385,7 +415,6 @@ if not st.session_state.df_base.empty:
                 column_config={"Cotação Atual": st.column_config.NumberColumn(format="R$ %.2f"), "VPA (Contábil)": st.column_config.NumberColumn("VPA (Editar)", format="R$ %.2f"), "LPA Projetado": st.column_config.NumberColumn("LPA Projetado (Editar)", format="R$ %.2f")},
                 key="edit_graham")
             
-            # Ancoragem firme de memória Graham
             st.session_state.df_simul["VPA (Contábil)"] = df_graham_editado["VPA (Contábil)"]
             st.session_state.df_simul["LPA Projetado"] = df_graham_editado["LPA Projetado"]
             
@@ -399,7 +428,6 @@ if not st.session_state.df_base.empty:
                 try: lpa_proj = float(row['LPA Projetado'])
                 except: lpa_proj = 0.0
                 
-                # Blindagem contra VPA/LPA negativos (quebrando a matemática da raiz quadrada)
                 graham = (22.5 * lpa_proj * vpa) ** 0.5 if (lpa_proj > 0 and vpa > 0) else 0.0
                 margem_g = (((graham / cotacao) - 1) * 100) if (graham > 0 and cotacao > 0) else 0.0
                 linhas_graham.append({"Ativo": t, "Cotação Atual": cotacao, "Preço Justo (Graham)": graham, "Margem de Segurança": margem_g})
