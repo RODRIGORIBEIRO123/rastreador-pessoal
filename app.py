@@ -83,14 +83,13 @@ def gerar_excel_premium(df_perf, df_val):
         chart.type, chart.style = "col", 13
         chart.title, chart.y_axis.title = "Retorno Total vs CDI e IPCA", "Rentabilidade (%)"
         
-        # Ajustado para as novas posições das colunas (Evol c/ Div = 12, IPCA = 13, CDI = 14)
         dados_grafico = Reference(ws, min_col=12, min_row=1, max_col=14, max_row=len(df_p)+1)
         categorias = Reference(ws, min_col=1, min_row=2, max_row=len(df_p)+1)
         
         chart.add_data(dados_grafico, titles_from_data=True)
         chart.set_categories(categorias)
         chart.height, chart.width = 15, 30
-        ws.add_chart(chart, "P2") # Movido mais para a direita para não tapar as novas colunas
+        ws.add_chart(chart, "P2") 
     return output.getvalue()
 
 # ==========================================
@@ -349,27 +348,37 @@ if not st.session_state.df_base.empty:
         with tab4:
             st.markdown("### 1. Performance Global (Desde a Data Média Ponderada)")
             todos_ativos = df_perf_final['Ativo'].tolist()
-            ativos_selecionados = st.multiselect("Selecione os ativos para análise global:", todos_ativos, default=todos_ativos[:6], key="ms_global")
             
-            if ativos_selecionados:
+            c_sel, c_ind = st.columns([2, 1])
+            with c_sel: ativos_selecionados = st.multiselect("Selecione os ativos:", todos_ativos, default=todos_ativos[:6], key="ms_global")
+            # O SEGREDO ESTÁ AQUI: FILTRO EXPLÍCITO DE INDICADORES
+            with c_ind: ind_selecionados = st.multiselect("Indicadores:", ["Evolução c/ Div", "CDI Acum.", "IPCA Acum."], default=["Evolução c/ Div", "CDI Acum.", "IPCA Acum."], key="ind_global")
+            
+            if ativos_selecionados and ind_selecionados:
                 df_grafico = df_perf_final[df_perf_final['Ativo'].isin(ativos_selecionados)]
-                df_melt = df_grafico.melt(id_vars=["Ativo"], value_vars=["Evolução c/ Div", "CDI Acum.", "IPCA Acum."], var_name="Indicador", value_name="Rentabilidade")
+                df_melt = df_grafico.melt(id_vars=["Ativo"], value_vars=ind_selecionados, var_name="Indicador", value_name="Rentabilidade")
                 fig1 = px.bar(df_melt, x="Ativo", y="Rentabilidade", color="Indicador", barmode="group", text="Rentabilidade")
                 fig1.update_traces(texttemplate='%{text:.2f}%', textposition='outside')
                 fig1.update_layout(yaxis_ticksuffix=" %", margin=dict(t=30))
                 st.plotly_chart(fig1, use_container_width=True)
+            elif not ind_selecionados:
+                st.info("Selecione pelo menos um indicador para exibir.")
 
             st.divider()
             
             st.markdown("### 2. Análise de Período Específico (Janela Tática)")
-            st.markdown("Verifique a rentabilidade exata e os dividendos pagos em uma janela de tempo específica.")
+            st.markdown("Verifique a rentabilidade e os dividendos pagos em uma janela de tempo isolada.")
             
-            c_dt1, c_dt2, c_btn = st.columns([2, 2, 2])
+            c_dt1, c_dt2, c_btn = st.columns([1, 1, 1])
             with c_dt1: dt_inicio_custom = st.date_input("Data de Início", pd.Timestamp.now().date() - pd.DateOffset(years=1))
             with c_dt2: dt_fim_custom = st.date_input("Data de Fim", pd.Timestamp.now().date())
+            with c_btn:
+                # Mesmo filtro explicito para a janela temporal
+                ind_custom = st.multiselect("Indicadores:", ["Retorno Total (%)", "CDI Período", "IPCA Período"], default=["Retorno Total (%)", "CDI Período", "IPCA Período"], key="ind_custom")
             
-            if c_btn.button("Gerar Análise do Período", use_container_width=True):
+            if st.button("Gerar Análise do Período", use_container_width=True):
                 if not ativos_selecionados: st.warning("Selecione os ativos na caixa acima.")
+                elif not ind_custom: st.warning("Selecione pelo menos um indicador.")
                 else:
                     with st.spinner("Conectando à bolsa para o período específico..."):
                         linhas_custom = []
@@ -393,7 +402,7 @@ if not st.session_state.df_base.empty:
                         
                         if linhas_custom:
                             df_custom = pd.DataFrame(linhas_custom)
-                            df_custom_melt = df_custom.melt(id_vars=["Ativo"], value_vars=["Retorno Total (%)", "CDI Período", "IPCA Período"], var_name="Indicador", value_name="Rentabilidade")
+                            df_custom_melt = df_custom.melt(id_vars=["Ativo"], value_vars=ind_custom, var_name="Indicador", value_name="Rentabilidade")
                             fig_custom = px.bar(df_custom_melt, x="Ativo", y="Rentabilidade", color="Indicador", barmode="group", text="Rentabilidade")
                             fig_custom.update_traces(texttemplate='%{text:.2f}%', textposition='outside')
                             fig_custom.update_layout(yaxis_ticksuffix=" %", margin=dict(t=30))
