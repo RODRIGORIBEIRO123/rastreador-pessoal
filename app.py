@@ -235,7 +235,7 @@ if not st.session_state.df_base.empty:
             meses_investido = calcular_meses(data_compra)
             
             dados_mercado[ticker] = {
-                "Qtd": float(row['Quantidade']), "PM": float(row['Preço Médio']),
+                "Qtd": float(row['Quantidade']), "PM": float(row['Preço Médio']), "Data": data_compra,
                 "Preço Atual": preco_atual, "Div_Total": divs_total, "CDI": cdi, "IPCA": ipca, "Meses": meses_investido
             }
 
@@ -250,7 +250,7 @@ if not st.session_state.df_base.empty:
         st.success("Análise Matemática Concluída!")
 
     # ==========================================
-    # 4. PAINEL DE RELATÓRIOS (4 ABAS)
+    # 4. PAINEL DE RELATÓRIOS E GRÁFICOS
     # ==========================================
     if st.session_state.dados_mercado:
         linhas_perf = []
@@ -271,6 +271,7 @@ if not st.session_state.df_base.empty:
                 "Total Investido": investido,
                 "Saldo Atual": saldo,
                 "Resultado (R$)": resultado,
+                "Data Média": dm['Data'].strftime('%d/%m/%Y'),
                 "Meses (Média)": int(dm['Meses']),
                 "Total Div. (R$)": dm['Div_Total'], 
                 "DY on Cost": yoc,
@@ -346,20 +347,27 @@ if not st.session_state.df_base.empty:
                 "Cotação Atual": st.column_config.NumberColumn(format="R$ %.2f"), "Preço Justo (Graham)": st.column_config.NumberColumn(format="R$ %.2f"), "Margem de Segurança": st.column_config.NumberColumn(format="%.2f %%")})
 
         with tab4:
-            st.markdown("### 1. Performance Global (Desde a Data Média Ponderada)")
+            st.markdown("### 1. Performance Global (Individualizada por Ativo)")
             todos_ativos = df_perf_final['Ativo'].tolist()
             
             c_sel, c_ind = st.columns([2, 1])
             with c_sel: ativos_selecionados = st.multiselect("Selecione os ativos:", todos_ativos, default=todos_ativos[:6], key="ms_global")
-            # O SEGREDO ESTÁ AQUI: FILTRO EXPLÍCITO DE INDICADORES
             with c_ind: ind_selecionados = st.multiselect("Indicadores:", ["Evolução c/ Div", "CDI Acum.", "IPCA Acum."], default=["Evolução c/ Div", "CDI Acum.", "IPCA Acum."], key="ind_global")
             
             if ativos_selecionados and ind_selecionados:
                 df_grafico = df_perf_final[df_perf_final['Ativo'].isin(ativos_selecionados)]
-                df_melt = df_grafico.melt(id_vars=["Ativo"], value_vars=ind_selecionados, var_name="Indicador", value_name="Rentabilidade")
-                fig1 = px.bar(df_melt, x="Ativo", y="Rentabilidade", color="Indicador", barmode="group", text="Rentabilidade")
+                df_melt = df_grafico.melt(id_vars=["Ativo", "Data Média"], value_vars=ind_selecionados, var_name="Indicador", value_name="Rentabilidade")
+                
+                # ADICIONANDO A DATA AO TÍTULO DINAMICAMENTE QUANDO 1 ATIVO É SELECIONADO
+                if len(ativos_selecionados) == 1:
+                    data_ref = df_grafico.iloc[0]['Data Média']
+                    titulo_graf1 = f"Performance Desde: {data_ref} até Hoje"
+                else:
+                    titulo_graf1 = "Performance Baseada nas Datas Médias de Cada Ativo"
+                    
+                fig1 = px.bar(df_melt, x="Ativo", y="Rentabilidade", color="Indicador", barmode="group", text="Rentabilidade", title=titulo_graf1)
                 fig1.update_traces(texttemplate='%{text:.2f}%', textposition='outside')
-                fig1.update_layout(yaxis_ticksuffix=" %", margin=dict(t=30))
+                fig1.update_layout(yaxis_ticksuffix=" %", margin=dict(t=40))
                 st.plotly_chart(fig1, use_container_width=True)
             elif not ind_selecionados:
                 st.info("Selecione pelo menos um indicador para exibir.")
@@ -367,13 +375,10 @@ if not st.session_state.df_base.empty:
             st.divider()
             
             st.markdown("### 2. Análise de Período Específico (Janela Tática)")
-            st.markdown("Verifique a rentabilidade e os dividendos pagos em uma janela de tempo isolada.")
-            
             c_dt1, c_dt2, c_btn = st.columns([1, 1, 1])
             with c_dt1: dt_inicio_custom = st.date_input("Data de Início", pd.Timestamp.now().date() - pd.DateOffset(years=1))
             with c_dt2: dt_fim_custom = st.date_input("Data de Fim", pd.Timestamp.now().date())
             with c_btn:
-                # Mesmo filtro explicito para a janela temporal
                 ind_custom = st.multiselect("Indicadores:", ["Retorno Total (%)", "CDI Período", "IPCA Período"], default=["Retorno Total (%)", "CDI Período", "IPCA Período"], key="ind_custom")
             
             if st.button("Gerar Análise do Período", use_container_width=True):
@@ -403,8 +408,11 @@ if not st.session_state.df_base.empty:
                         if linhas_custom:
                             df_custom = pd.DataFrame(linhas_custom)
                             df_custom_melt = df_custom.melt(id_vars=["Ativo"], value_vars=ind_custom, var_name="Indicador", value_name="Rentabilidade")
-                            fig_custom = px.bar(df_custom_melt, x="Ativo", y="Rentabilidade", color="Indicador", barmode="group", text="Rentabilidade")
+                            
+                            # TÍTULO DINÂMICO PARA O PERÍODO ESPECÍFICO
+                            titulo_graf2 = f"Performance no Período: {dt_inicio_custom.strftime('%d/%m/%Y')} a {dt_fim_custom.strftime('%d/%m/%Y')}"
+                            fig_custom = px.bar(df_custom_melt, x="Ativo", y="Rentabilidade", color="Indicador", barmode="group", text="Rentabilidade", title=titulo_graf2)
                             fig_custom.update_traces(texttemplate='%{text:.2f}%', textposition='outside')
-                            fig_custom.update_layout(yaxis_ticksuffix=" %", margin=dict(t=30))
+                            fig_custom.update_layout(yaxis_ticksuffix=" %", margin=dict(t=40))
                             st.plotly_chart(fig_custom, use_container_width=True)
                         else: st.error("Sem histórico para o período.")
