@@ -26,8 +26,10 @@ UNITS_ACOES = ['SANB11', 'TAEE11', 'KLBN11', 'BPAC11', 'ALUP11', 'ENGI11', 'BIDI
 if 'df_base' not in st.session_state: st.session_state.df_base = pd.DataFrame()
 if 'dados_mercado' not in st.session_state: st.session_state.dados_mercado = {}
 if 'df_simul' not in st.session_state: st.session_state.df_simul = pd.DataFrame()
+
+# Inicialização do Histórico do Comitê de IA
 if 'historico_chat' not in st.session_state:
-    st.session_state.historico_chat = [{"role": "assistant", "content": "Olá! Sou sua analista sênior integrada. Meu prompt já está parametrizado com os dados de mercado e os ativos da sua tabela. Pode me perguntar sobre seus valuations, margens de segurança ou alocação tática."}]
+    st.session_state.historico_chat = [{"role": "assistant", "content": "Saudações. Sou a sua analista sênior integrada. O terminal foi reestruturado para mapear seus ativos e os indicadores do Focus em tempo real. Insira sua chave API corporativa para análises macro discricionárias profundas ou execute diagnósticos quantitativos diretamente."}]
 
 @st.cache_data(ttl=86400)
 def carregar_macro():
@@ -314,6 +316,8 @@ if not st.session_state.df_base.empty:
         m3.metric("💸 Renda Acumulada (Ações)", f"R$ {df_acoes['Total Div. (R$)'].sum():,.2f}", help=tooltip_msg)
         m4.metric("💸 Renda Acumulada (FIIs)", f"R$ {df_fiis['Total Div. (R$)'].sum():,.2f}", help=tooltip_msg)
 
+        st.download_button(label="📥 Exportar Relatório (Excel)", data=gerar_excel_premium(df_perf_final, st.session_state.df_simul), file_name="Relatorio_Carteira.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
         tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
             "📊 Visão Geral", "💰 Bazin (Renda)", "🏢 Graham (Valor)", 
             "⚖️ Pesos e Setores", "🎯 Recomendações e Projeções", "📈 Gráficos Interativos", "💬 Assistente IA"
@@ -325,7 +329,7 @@ if not st.session_state.df_base.empty:
         with tab2:
             yield_desejado = st.number_input("Taxa de Risco Exigida (%):", value=6.0, step=0.5) / 100.0
             df_bazin_view = st.session_state.df_simul[["Ativo", "Cotação Atual", "Div. Proj. (R$)"] if "Div. Proj. (R$)" in st.session_state.df_simul.columns else ["Ativo", "Cotação Atual", "Div. Projetado (R$)"]].copy()
-            df_bazin_editado = st.data_editor(df_bazin_view, use_container_width=True, hide_index=True, disabled=["Ativo", "Cotação Atual"], key="edit_bazin")
+            df_bazin_editado = st.data_editor(df_bazin_view, use_container_width=True, hide_index=True, disabled=["Ativo", "Cotação Atual"], key="edit_bazin", column_config={"Cotação Atual": st.column_config.NumberColumn(format="R$ %.2f"), "Div. Projetado (R$)": st.column_config.NumberColumn(format="R$ %.2f")})
             st.session_state.df_simul["Div. Projetado (R$)"] = df_bazin_editado.iloc[:, 2]
             
             linhas_bazin = []
@@ -338,7 +342,7 @@ if not st.session_state.df_base.empty:
 
         with tab3:
             df_graham_view = st.session_state.df_simul[["Ativo", "Cotação Atual", "VPA (Contábil)", "LPA Projetado"]].copy()
-            df_graham_editado = st.data_editor(df_graham_view, use_container_width=True, hide_index=True, disabled=["Ativo", "Cotação Atual"], key="edit_graham")
+            df_graham_editado = st.data_editor(df_graham_view, use_container_width=True, hide_index=True, disabled=["Ativo", "Cotação Atual"], key="edit_graham", column_config={"Cotação Atual": st.column_config.NumberColumn(format="R$ %.2f"), "VPA (Contábil)": st.column_config.NumberColumn(format="R$ %.2f"), "LPA Projetado": st.column_config.NumberColumn(format="R$ %.2f")})
             st.session_state.df_simul["VPA (Contábil)"] = df_graham_editado["VPA (Contábil)"]
             st.session_state.df_simul["LPA Projetado"] = df_graham_editado["LPA Projetado"]
             
@@ -365,17 +369,13 @@ if not st.session_state.df_base.empty:
             with c_t2: st.dataframe(gerar_tabela_peso('Ativo'), use_container_width=True, hide_index=True)
             with c_t3: st.dataframe(gerar_tabela_peso('Setor'), use_container_width=True, hide_index=True)
 
-        # ==========================================
-        # ABA 5: RECOMENDAÇÕES E PROJEÇÃO FOCUS
-        # ==========================================
         with tab5:
             proj_focus, ano_atual = obter_projecoes_focus()
             st.markdown(f"### 🇧🇷 Projeções Macroeconômicas (Boletim Focus Bacen)")
-            st.info(f"**IPCA {ano_atual}:** {proj_focus.get(f'IPCA_{ano_atual}', 3.9)}%  |  **Selic {ano_atual}:** {proj_focus.get(f'Selic_{ano_atual}', 10.5)}%  ||  **IPCA {ano_atual+1}:** {proj_focus.get(f'IPCA_{ano_atual+1}', 3.78)}%  |  **Selic {ano_atual+1}:** {proj_focus.get(f'Selic_{ano_atual+1}', 9.5)}%")
+            st.info(f"**IPCA {ano_atual}:** {proj_focus.get(f'IPCA_{ano_atual}', 5.33)}%  |  **Selic {ano_atual}:** {proj_focus.get(f'Selic_{ano_atual}', 14.00)}%  ||  **IPCA {ano_atual+1}:** {proj_focus.get(f'IPCA_{ano_atual+1}', 4.15)}%  |  **Selic {ano_atual+1}:** {proj_focus.get(f'Selic_{ano_atual+1}', 12.00)}%")
             
             st.markdown("### 🤖 Radar de Oportunidades do Especialista")
             
-            # 🔥 ENTRADAS DO MODULO DE VALUATION INTERATIVO (CAMPOS DE CONFIGURAÇÃO SOLICITADOS)
             c_p1, c_p2, c_p3, c_p4 = st.columns(4)
             patrimonio_fora = c_p1.number_input("Patrimônio Fora da Bolsa (R$):", value=0.0, step=10000.0)
             aporte_mensal_planejado = c_p2.number_input("Aporte Mensal (R$):", value=2000.0, step=500.0)
@@ -385,20 +385,26 @@ if not st.session_state.df_base.empty:
             df_recs = pd.merge(df_perf_final[['Ativo', 'Tipo']], st.session_state.df_rec_bazin[['Ativo', 'Margem Segurança']], on='Ativo', how='left').rename(columns={'Margem Segurança': 'Margem Bazin (%)'})
             df_recs = pd.merge(df_recs, st.session_state.df_rec_graham[['Ativo', 'Margem Segurança']], on='Ativo', how='left').rename(columns={'Margem Segurança': 'Margem Graham (%)'})
             
+            # ADICIONADO: CAMPOS DE DIGITAÇÃO PARA MARGENS RECOMENDADAS TÁTICAS (PRÊMIO DE RISCO LIBERADO)
+            st.markdown("##### ⚖️ Parametrização Exigida do Prêmio de Risco")
+            c_m1, c_m2 = st.columns(2)
+            margem_graham_exigida = c_m1.number_input("Margem de Segurança Mínima de Graham (Ações %):", value=15.0, step=1.0)
+            margem_bazin_exigida = c_m2.number_input("Margem de Segurança Mínima de Bazin (FIIs/Renda %):", value=5.0, step=1.0)
+
             recomendacoes = []
             for _, r in df_recs.iterrows():
                 if r['Tipo'] == 'Ação':
-                    if r['Margem Graham (%)'] > 15 and r['Margem Bazin (%)'] > 5: recomendacoes.append("COMPRA FORTE 🟢")
+                    if r['Margem Graham (%)'] > margem_graham_exigida and r['Margem Bazin (%)'] > margem_bazin_exigida: recomendacoes.append("COMPRA FORTE 🟢")
                     elif r['Margem Graham (%)'] > 0 or r['Margem Bazin (%)'] > 0: recomendacoes.append("MANTER / COMPRA 🟡")
                     else: recomendacoes.append("AVALIAR VENDA 🔴")
                 else: 
-                    if r['Margem Bazin (%)'] > 5: recomendacoes.append("COMPRA FORTE 🟢")
+                    if r['Margem Bazin (%)'] > margem_bazin_exigida: recomendacoes.append("COMPRA FORTE 🟢")
                     elif r['Margem Bazin (%)'] > -5: recomendacoes.append("MANTER 🟡")
                     else: recomendacoes.append("AVALIAR VENDA 🔴")
             df_recs['Status Recomendações'] = recomendacoes
             
             st.dataframe(df_recs, use_container_width=True, hide_index=True, column_config={
-                "Status Recomendações": st.column_config.TextColumn("Status Recomendações ❓", help="COMPRA FORTE 🟢: Desconto patrimonial Graham > 15% E Margem Bazin > 5%.\nMANTER 🟡: Margem equilibrada.\nAVALIAR VENDA 🔴: Ativo caro e dividendos abaixo da taxa exigida.")
+                "Status Recomendações": st.column_config.TextColumn("Status Recomendações ❓", help=f"COMPRA FORTE 🟢: Desconto patrimonial Graham > {margem_graham_exigida}% E Margem Bazin > {margem_bazin_exigida}%.\nMANTER 🟡: Margem equilibrada.\nAVALIAR VENDA 🔴: Ativo caro e dividendos abaixo da taxa exigida.")
             })
 
             st.divider()
@@ -451,8 +457,6 @@ if not st.session_state.df_base.empty:
                 fig1.update_traces(hovertemplate='<b>%{x}</b> (%{data.name})<br>Período: %{customdata[0]}<br>Rentabilidade: %{y:.2f}%<extra></extra>')
                 fig1.update_layout(yaxis_ticksuffix=" %", margin=dict(t=40))
                 st.plotly_chart(fig1, use_container_width=True)
-                
-                st.markdown("#### 📋 Dados Tabulares Globais")
                 st.dataframe(df_grafico[['Ativo', 'Período', 'Evolução c/ Div', 'CDI Acum.', 'IPCA Acum.']], use_container_width=True, hide_index=True)
 
             st.divider()
@@ -492,26 +496,64 @@ if not st.session_state.df_base.empty:
                             st.dataframe(df_custom, use_container_width=True, hide_index=True)
 
         # ==========================================
-        # ABA 7: TERMINAL DE IA PARAMETRIZADO NATIVO
+        # NOVO: ABA 7 - REESTRUTURAÇÃO COMPLETA DA IA SÊNIOR
         # ==========================================
         with tab7:
-            st.markdown("### 💬 Módulo de Inteligência Artificial Integrado")
+            st.markdown("### 🏢 Comitê de Alocação IA - Visão CNPI Sênior")
+            st.markdown("Insira sua chave de API corporativa para habilitar o processamento analítico profundo. Seus dados de carteira e os indicadores do Focus serão convertidos e injetados de forma estrita como memória contextual.")
+            
+            api_key = st.text_input("Chave API do Google Gemini (Opcional):", type="password", help="Gere uma chave segura e gratuita no Google AI Studio")
+            
+            st.write("---")
             for msg in st.session_state.historico_chat:
                 with st.chat_message(msg["role"]): st.write(msg["content"])
                 
-            if prompt := st.chat_input("Ex: Qual o meu ativo com maior desconto contábil?"):
+            if prompt := st.chat_input("Ex: Qual o impacto da Selic terminal a 14% na nossa carteira de FIIs?"):
                 st.session_state.historico_chat.append({"role": "user", "content": prompt})
                 with st.chat_message("user"): st.write(prompt)
                 
-                # Respostas Locais Rápidas Baseadas na Carteira Real Atual
-                p_u = prompt.upper()
-                if "MAIOR" in p_u and "LUCRO" in p_u:
-                    idx = df_perf_final['Resultado (R$)'].idxmax()
-                    resposta = f"Análise concluída: O ativo que gerou o maior ganho de capital nominal na carteira é **{df_perf_final.loc[idx, 'Ativo']}**, com um resultado positivo de {df_perf_final.loc[idx, 'Resultado (R$)']:,.2f}."
-                elif "MAIOR" in p_u and "BAZIN" in p_u:
-                    resposta = f"Análise Bazin: Conforme as projeções da Aba 2, o ativo com a maior Margem de Segurança calculada frente ao preço teto é **{st.session_state.df_rec_bazin.sort_values('Margem Segurança', ascending=False)['Ativo'].iloc[0]}**."
+                # Serialização estruturada dos dados em tempo real para alimentação da IA
+                contexto_carteira = df_perf_final[['Ativo', 'Qtd', 'Preço Médio', 'Preço Atual', 'Total Investido', 'Saldo Atual', 'Resultado (R$)', 'Total Div. (R$)', 'Evolução c/ Div']].to_markdown(index=False)
+                contexto_macro = f"Selic Corrente/Projetada: {proj_focus.get(f'Selic_{ano_atual}', 14.0)}% | IPCA Esperado: {proj_focus.get(f'IPCA_{ano_atual}', 5.33)}%"
+                
+                if api_key:
+                    try:
+                        import google.generativeai as genai
+                        genai.configure(api_key=api_key)
+                        model = genai.GenerativeModel('gemini-pro')
+                        
+                        sys_prompt = f"""
+                        Você é uma Analista de Investimentos Sênior (CNPI) e Gestora de Portfólio Escolarizada e de Elite.
+                        Sua linguagem é estritamente corporativa, executiva, fria, baseada em dados e voltada a relatórios de alta governança.
+                        Você tem acesso irrestrito ao banco de dados consolidado da carteira do usuário e ao cenário macroeconômico do Banco Central.
+                        
+                        [MATRIZ DE DADOS EM TEMPO REAL]
+                        {contexto_carteira}
+                        
+                        [CENÁRIO MACRO FOCUS]
+                        {contexto_macro}
+                        
+                        [DIRETRIZES DE RESPOSTA]
+                        - Nunca responda como estagiário ("Acho que...", "Investir é bom..."). Use termos como Duration, Cost of Capital, Yield on Cost, Risco Sistêmico e Alocação Eficiente.
+                        - Cruze os dados das tabelas para responder com números exatos do patrimônio dele.
+                        """
+                        response = model.generate_content([sys_prompt, prompt])
+                        resposta = response.text
+                    except Exception as e:
+                        resposta = f"⚠️ Falha de handshake com o motor Gemini. Verifique a validade da chave. Detalhe: {e}"
                 else:
-                    resposta = f"Análise Sênior: Entendi sua dúvida sobre '{prompt}'. Com base no último Boletim Focus (Selic a {proj_focus.get(f'Selic_{ano_atual}', 14.0)}%), recomendo focar em ativos com Margem de Segurança positiva no Radar da Aba 5 para mitigar o prêmio de risco país."
+                    # ENGINE DE COMPILAÇÃO QUANTITATIVA LOCAL SÊNIOR (Caso rode sem chave)
+                    p_u = prompt.upper()
+                    if "CONCENTRAÇÃO" in p_u or "PESO" in p_u or "RISCO" in p_u or "SETOR" in p_u:
+                        maior_ativo = df_perf_final.sort_values('Saldo Atual', ascending=False).iloc[0]
+                        maior_setor = df_perf_final.groupby('Setor')['Saldo Atual'].sum().idxmax()
+                        peso_setor = (df_perf_final.groupby('Setor')['Saldo Atual'].sum().max() / df_perf_final['Saldo Atual'].sum()) * 100
+                        resposta = f"**[Diagnóstico Quantitativo Sênior]** Analisando os desvios padrão de alocação, identifico um risco de cauda por concentração setorial em **{maior_setor}**, que responde por **{peso_setor:.2f}%** do capital total exposto. No nível individual, o ativo de maior peso é **{maior_ativo['Ativo']}** ({maior_ativo['Saldo Atual']/df_perf_final['Saldo Atual'].sum()*100:.2f}%). Sob uma Selic de {proj_focus.get(f'Selic_{ano_atual}', 14.0)}%, essa concentração eleva o custo de oportunidade do portfólio."
+                    elif "BAZIN" in p_u or "TETO" in p_u or "COMPRA" in p_u:
+                        ativo_bazin = st.session_state.df_rec_bazin.sort_values('Margem Segurança', ascending=False).iloc[0]
+                        resposta = f"**[Auditoria de Valuation - Renda]** Cruzando o preço de tela com a curva histórica de proventos, o ativo que apresenta o prêmio de risco mais distorcido a seu favor (desconto tático) é **{ativo_bazin['Ativo']}**, operando com uma Margem de Segurança de **{ativo_bazin['Margem Segurança']:.2f}%** frente ao preço teto estabelecido."
+                    else:
+                        resposta = f"**[Aviso do Comitê CNPI]** Chave de API ausente. Para liberar o processamento interpretativo e conversação livre de nível Sênior, insira o token no topo da aba. O motor local está limitado a relatórios quantitativos estruturados sobre 'concentração', 'risco de setor' ou 'assimetria Bazin'."
                 
                 st.session_state.historico_chat.append({"role": "assistant", "content": resposta})
                 with st.chat_message("assistant"): st.write(resposta)
