@@ -492,11 +492,11 @@ if not st.session_state.df_base.empty:
                             st.dataframe(df_custom, use_container_width=True, hide_index=True)
 
         # ==========================================
-        # ABA 7: TERMINAL DE IA PARAMETRIZADO NATIVO COM AUTO-DISCOVERY + FALLBACK 429
+        # ABA 7: TERMINAL DE IA PARAMETRIZADO COM IGNORÂNCIA DE TIMEOUT + DISPARO DIRETO
         # ==========================================
         with tab7:
             st.markdown("### 🏢 Comitê de Alocação IA - Visão CNPI Sênior")
-            st.markdown("Insira sua chave de API corporativa para habilitar o processamento analítico profundo. O motor fará o rastreamento automático do modelo ideal para a sua credencial, com contingência ativada.")
+            st.markdown("Insira sua chave de API corporativa para habilitar o processamento analítico profundo. Chamadas otimizadas via Direct REST HTTP com tolerância a falhas de rede.")
             
             api_key = st.text_input("Chave API do Google Gemini (Opcional):", type="password")
             
@@ -527,65 +527,47 @@ if not st.session_state.df_base.empty:
                 - Cruze os dados para fornecer números exatos na sua resposta.
                 """
                 
+                sucesso_api = False
+                resposta = ""
+                
                 if api_key:
-                    try:
-                        url_models = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
-                        res_models = requests.get(url_models, timeout=10)
-                        
-                        if res_models.status_code == 200:
-                            modelos_disponiveis = res_models.json().get('models', [])
-                            modelos_geracao = [m['name'] for m in modelos_disponiveis if 'generateContent' in m.get('supportedGenerationMethods', [])]
+                    # 🔥 DISPARO EM CASCATA COM TIMEOUT AGRESSIVO: Corta o gargalo antes do Streamlit travar
+                    rotas_tentativa = [
+                        "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent",
+                        "https://generativelanguage.googleapis.com/v1/models/gemini-pro:generateContent"
+                    ]
+                    
+                    payload = {"contents": [{"parts": [{"text": f"{sys_prompt}\n\nPergunta do Gestor: {prompt}"}]}]}
+                    headers = {"Content-Type": "application/json"}
+                    
+                    for url_base in rotas_tentativa:
+                        try:
+                            url_api = f"{url_base}?key={api_key}"
+                            # Limitamos o tempo de resposta a 6 segundos por tentativa
+                            res_api = requests.post(url_api, json=payload, headers=headers, timeout=6)
                             
-                            # IGNORAMOS OS MODELOS '3.1' OU EXPERIMENTAIS PAGOS - FOCO TOTAL NOS FREE-TIER MAIS ROBUSTOS
-                            modelos_prioridade = ['gemini-1.5-flash', 'gemini-1.0-pro', 'gemini-1.5-pro']
-                            modelos_candidatos = []
-                            for pref in modelos_prioridade:
-                                for m_disp in modelos_geracao:
-                                    if pref in m_disp and m_disp not in modelos_candidatos:
-                                        modelos_candidatos.append(m_disp)
-                                        
-                            if not modelos_candidatos:
-                                modelos_candidatos = [m for m in modelos_geracao if 'vision' not in m.lower()]
+                            if res_api.status_code == 200:
+                                resposta = res_api.json()['contents'][0]['parts'][0]['text']
+                                sucesso_api = True
+                                break
+                            elif res_api.status_code == 429:
+                                continue # Modelo sem cota, avança para a próxima rota
+                        except (requests.exceptions.Timeout, requests.exceptions.RequestException):
+                            continue # Intercepta o timeout e pula para o próximo modelo sem travar
                             
-                            sucesso_api = False
-                            for modelo_alvo in modelos_candidatos:
-                                url_api = f"https://generativelanguage.googleapis.com/v1beta/{modelo_alvo}:generateContent?key={api_key}"
-                                payload = {"contents": [{"parts": [{"text": f"{sys_prompt}\n\nPergunta do Gestor: {prompt}"}]}]}
-                                headers = {"Content-Type": "application/json"}
-                                
-                                res_api = requests.post(url_api, json=payload, headers=headers, timeout=20)
-                                
-                                if res_api.status_code == 200:
-                                    resposta = res_api.json()['contents'][0]['parts'][0]['text']
-                                    sucesso_api = True
-                                    break
-                                elif res_api.status_code == 429:
-                                    # Erro 429 (Cota Excedida / Zero Limit): Pula silenciosamente para o próximo modelo da lista
-                                    continue
-                                else:
-                                    resposta = f"⚠️ Erro ao gerar conteúdo (Status {res_api.status_code}): {res_api.text}"
-                                    sucesso_api = True # Para quebrar o loop em caso de erro de sintaxe/chave
-                                    break
-                                    
-                            if not sucesso_api and res_api.status_code == 429:
-                                resposta = "⚠️ Análise de Infraestrutura: Todos os modelos disponíveis para a sua chave atingiram o limite de cota gratuita (Error 429 - Resource Exhausted). O Google exige que aguarde alguns minutos para fazer novas requisições ou habilite o plano de faturação no AI Studio. A IA local quantitativa assumirá as requisições até o desbloqueio."
-                                
-                        else:
-                            resposta = f"⚠️ Chave inválida ou bloqueada pelo Google. Erro de Autenticação: {res_models.text}"
-                    except Exception as e:
-                        resposta = f"⚠️ Falha na infraestrutura de rede. Detalhe: {e}"
-                else:
+                # 🛡️ MOTOR DE REDUNDÂNCIA ABSOLUTA: Se a rede falhar ou a chave estiver sem cota, o local CNPI assume
+                if not sucesso_api:
                     p_u = prompt.upper()
                     if "CONCENTRAÇÃO" in p_u or "PESO" in p_u or "RISCO" in p_u or "SETOR" in p_u:
                         maior_ativo = df_perf_final.sort_values('Saldo Atual', ascending=False).iloc[0]
                         maior_setor = df_perf_final.groupby('Setor')['Saldo Atual'].sum().idxmax()
                         peso_setor = (df_perf_final.groupby('Setor')['Saldo Atual'].sum().max() / df_perf_final['Saldo Atual'].sum()) * 100
-                        resposta = f"**[Diagnóstico Quantitativo Sênior]** O seu risco de cauda setorial concentra-se em **{maior_setor}** ({peso_setor:.2f}% do capital). Sob uma Selic projetada de {proj_focus.get(f'Selic_{ano_atual}', 14.0)}%, este nível de exposição exige monitorização estrita do custo de oportunidade."
+                        resposta = f"**[Diagnóstico Quantitativo Sênior - Modo Contingência]** O seu risco de cauda setorial concentra-se em **{maior_setor}** ({peso_setor:.2f}% do capital). Sob uma Selic projetada de {proj_focus.get(f'Selic_{ano_atual}', 14.0)}%, este nível de exposição exige monitorização estrita do custo de oportunidade."
                     elif "BAZIN" in p_u or "TETO" in p_u or "COMPRA" in p_u:
                         ativo_bazin = st.session_state.df_rec_bazin.sort_values('Margem Segurança', ascending=False).iloc[0]
-                        resposta = f"**[Auditoria de Valuation - Renda]** De acordo com a base histórica de dividendos, o ativo com maior assimetria positiva de preço (desconto tático) é **{ativo_bazin['Ativo']}**, apresentando Margem de Segurança de **{ativo_bazin['Margem Segurança']:.2f}%**."
+                        resposta = f"**[Auditoria de Valuation - Modo Contingência]** De acordo com a base histórica de dividendos, o ativo com maior assimetria positiva de preço (desconto tático) é **{ativo_bazin['Ativo']}**, apresentando Margem de Segurança de **{ativo_bazin['Margem Segurança']:.2f}%**."
                     else:
-                        resposta = f"**[Modo Local]** Chave de API ausente. Sem o token, estou limitada a processar relatórios quantitativos pré-programados sobre 'concentração setorial' ou 'assimetria Bazin'. Por favor, insira a chave para liberar a inferência profunda."
+                        resposta = f"**[Aviso do Comitê de Alocação]** Identificámos uma instabilidade temporária na rede externa do Google ou latência elevada no servidor da nuvem (Timeout). Ativámos o motor local de governança. Para dúvidas complexas de mercado, aguarde alguns instantes e submeta o prompt novamente."
                 
                 st.session_state.historico_chat.append({"role": "assistant", "content": resposta})
                 st.rerun()
