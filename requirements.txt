@@ -4,3 +4,5 @@ yfinance
 python-bcb
 openpyxl
 plotly
+requests
+google-generativeai
