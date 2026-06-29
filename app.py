@@ -42,7 +42,6 @@ def obter_fundamentos_brasil():
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
         res = requests.get(url, headers=headers, timeout=10)
         df = pd.read_html(io.StringIO(res.text), decimal=',', thousands='.')[0]
-        
         fundamentos = {}
         for _, row in df.iterrows():
             t = str(row['Papel']).strip().upper()
@@ -53,6 +52,27 @@ def obter_fundamentos_brasil():
             fundamentos[t] = {'vpa': vpa, 'lpa': lpa}
         return fundamentos
     except: return {}
+
+# 📡 CONEXÃO COM API DO BACEN (BOLETIM FOCUS)
+@st.cache_data(ttl=86400)
+def obter_projecoes_focus():
+    try:
+        url = "https://olinda.bcb.gov.br/olinda/servico/Expectativas/versao/v1/odata/ExpectativasMercadoAnuais?$top=100&$filter=Indicador%20eq%20'IPCA'%20or%20Indicador%20eq%20'Selic'&$orderby=Data%20desc"
+        res = requests.get(url, timeout=5).json()
+        df_focus = pd.DataFrame(res['value'])
+        
+        ano_atual = pd.Timestamp.now().year
+        df_filtrado = df_focus[df_focus['DataReferencia'].astype(str).str.isin([str(ano_atual), str(ano_atual+1)])]
+        
+        # Puxamos as estimativas (Mediana) mais recentes para os anos atual e seguinte
+        projecoes = {}
+        for (ind, ano), grupo in df_filtrado.groupby(['Indicador', 'DataReferencia']):
+            projecoes[f"{ind}_{ano}"] = grupo['Mediana'].iloc[0]
+        return projecoes, ano_atual
+    except: 
+        # Fallback de segurança se o servidor do Bacen falhar
+        ano_atual = pd.Timestamp.now().year
+        return {f"IPCA_{ano_atual}": 4.0, f"Selic_{ano_atual}": 10.5, f"IPCA_{ano_atual+1}": 3.8, f"Selic_{ano_atual+1}": 9.5}, ano_atual
 
 def calcular_macro_acumulado(df_macro, data_inicio, data_fim=None):
     if df_macro is None or df_macro.empty or pd.isna(data_inicio): return 0.0, 0.0
@@ -103,7 +123,6 @@ def consolidar_carteira(df):
         if qtd <= 0: continue
         valor_total = (group['Quantidade'] * group['Preço Médio']).sum()
         pm = valor_total / qtd if qtd > 0 else 0
-        
         soma_tempo = sum((pd.Timestamp(row['Data Média']).timestamp() * row['Quantidade']) for _, row in group.iterrows() if pd.notna(row['Data Média']))
         dt_media = pd.to_datetime(soma_tempo / qtd, unit='s').date() if qtd > 0 else pd.Timestamp.now().date()
         linhas.append({"Ativo": ativo, "Quantidade": qtd, "Preço Médio": float(pm), "Data Média": dt_media})
@@ -120,7 +139,6 @@ def gerar_excel_premium(df_perf, df_val):
         df_val.fillna(0).to_excel(writer, sheet_name='Valuation', index=False)
     return output.getvalue()
 
-# MOTOR B3 E MESCLAGEM PROFISSIONAL
 def processar_planilha_b3(df):
     if df.empty: return pd.DataFrame()
     df['Data do Negócio'] = pd.to_datetime(df['Data do Negócio'], dayfirst=True, errors='coerce')
@@ -159,7 +177,7 @@ def processar_planilha_b3(df):
     return consolidar_carteira(pd.DataFrame(ativos_limpos))
 
 # ==========================================
-# 2. SISTEMA DE UPLOAD COM BOTÃO EXPLÍCITO
+# 2. SISTEMA DE UPLOAD DE ENTRADA
 # ==========================================
 st.sidebar.header("1. Upload de Arquivos")
 st.sidebar.markdown("Para iniciar, forneça o seu banco de dados ou a planilha da B3.")
@@ -179,14 +197,12 @@ if st.sidebar.button("🚀 Carregar e Rodar Aplicativo", use_container_width=Tru
         with st.spinner("Processando e cruzando dados..."):
             df_prin = ler_arquivo_universal(arquivo_principal)
             
-            # Verifica se é backup (já tem Data Média) ou B3 bruta
             if 'Data Média' in df_prin.columns:
                 df_prin['Data Média'] = pd.to_datetime(df_prin['Data Média'], errors='coerce').dt.date
                 base_atual = consolidar_carteira(df_prin)
             else:
                 base_atual = processar_planilha_b3(df_prin)
                 
-            # Se houver arquivo novo, transforma o estado atual numa "compra unificada" e injeta as novas ordens
             if arquivo_novo and not base_atual.empty:
                 df_novos = ler_arquivo_universal(arquivo_novo)
                 df_novos['Data do Negócio'] = pd.to_datetime(df_novos['Data do Negócio'], dayfirst=True, errors='coerce')
@@ -389,7 +405,6 @@ if not st.session_state.df_base.empty:
 
             st.divider()
             st.markdown("### 📋 Tabelas de Alocação Exata")
-            
             def gerar_tabela_peso(coluna):
                 df_peso = df_perf_final.groupby(coluna)['Saldo Atual'].sum().reset_index()
                 df_peso['Peso (%)'] = (df_peso['Saldo Atual'] / df_peso['Saldo Atual'].sum()) * 100
@@ -401,6 +416,11 @@ if not st.session_state.df_base.empty:
             with c_t3: st.dataframe(gerar_tabela_peso('Setor'), use_container_width=True, hide_index=True, column_config={"Saldo Atual": st.column_config.NumberColumn(format="R$ %.2f"), "Peso (%)": st.column_config.NumberColumn(format="%.2f %%")})
 
         with tab5:
+            # Integração Boletim Focus BCB
+            proj_focus, ano_atual = obter_projecoes_focus()
+            st.markdown(f"### 🇧🇷 Expectativas Macroeconômicas (Boletim Focus Bacen)")
+            st.info(f"**IPCA {ano_atual}:** {proj_focus.get(f'IPCA_{ano_atual}', '--')}%  |  **Selic {ano_atual}:** {proj_focus.get(f'Selic_{ano_atual}', '--')}%  ||  **IPCA {ano_atual+1}:** {proj_focus.get(f'IPCA_{ano_atual+1}', '--')}%  |  **Selic {ano_atual+1}:** {proj_focus.get(f'Selic_{ano_atual+1}', '--')}%")
+            
             st.markdown("### 🤖 Radar de Oportunidades do Especialista")
             df_recs = pd.merge(df_perf_final[['Ativo', 'Tipo']], st.session_state.df_rec_bazin[['Ativo', 'Margem Segurança']], on='Ativo', how='left').rename(columns={'Margem Segurança': 'Margem Bazin (%)'})
             df_recs = pd.merge(df_recs, st.session_state.df_rec_graham[['Ativo', 'Margem Segurança']], on='Ativo', how='left').rename(columns={'Margem Segurança': 'Margem Graham (%)'})
@@ -418,52 +438,67 @@ if not st.session_state.df_base.empty:
                     
             df_recs['Status Recomendações'] = recomendacoes
             
-            # Legenda inteligente oculta no nome da coluna!
             st.dataframe(df_recs, use_container_width=True, hide_index=True, column_config={
                 "Margem Bazin (%)": st.column_config.NumberColumn(format="%.2f %%"), 
                 "Margem Graham (%)": st.column_config.NumberColumn(format="%.2f %%"),
                 "Status Recomendações": st.column_config.TextColumn(
                     "Status Recomendações ❓",
-                    help="COMPRA FORTE 🟢: Margem Graham > 15% E Margem Bazin > 5%. (Desconto patrimonial e boa renda).\nMANTER / COMPRA 🟡: Pelo menos uma das margens positiva.\nAVALIAR VENDA 🔴: Ativo caro e dividendos abaixo do Yield Exigido."
+                    help="COMPRA FORTE 🟢: Desconto patrimonial e boa renda. | MANTER / COMPRA 🟡: Pelo menos uma das margens positiva. | AVALIAR VENDA 🔴: Ativo caro e dividendos abaixo do Yield Exigido."
                 )
             })
 
             st.divider()
             
-            st.markdown("### ❄️ Projeção Bola de Neve (Próximos 12 Meses)")
-            aporte_mensal_planejado = st.number_input("Aporte Mensal Planejado (R$):", value=2000.0, step=500.0, min_value=0.0, key="aporte_bola_neve")
+            st.markdown("### ❄️ Projeção Bola de Neve Completa (Juros Compostos Reais)")
+            st.markdown("Neste simulador institucional, ajustamos os Aportes Mensais, a Rentabilidade do Ganho de Capital, e a curva exponencial dos Dividendos e do Património fora de bolsa.")
             
-            saldo_total_atual = df_perf_final['Saldo Atual'].sum()
+            # PARÂMETROS FINANCEIROS DE ALTO NÍVEL
+            c_p1, c_p2, c_p3, c_p4 = st.columns(4)
+            patrimonio_fora = c_p1.number_input("Património Fora da Bolsa (R$):", value=0.0, step=10000.0)
+            aporte_mensal_planejado = c_p2.number_input("Aporte Mensal (R$):", value=2000.0, step=500.0)
+            rentabilidade_ganho = c_p3.number_input("Rentab. Mensal Estimada (%):", value=0.8, step=0.1) / 100.0
+            cresc_dividendos_anual = c_p4.number_input("Crescimento Anual de Divs (%):", value=5.0, step=1.0) / 100.0
+            
+            saldo_total_atual = df_perf_final['Saldo Atual'].sum() + patrimonio_fora
             div_total_12m = st.session_state.df_simul['Div. Projetado (R$)'].sum()
-            yield_mensal = (div_total_12m / saldo_total_atual) / 12 if saldo_total_atual > 0 else 0
+            base_div_mensal = div_total_12m / 12 if div_total_12m > 0 else 0
             
-            meses_lista, patr_inicial_acum, aportes_acumulados, dividendos_reinvestidos = [], [], [], []
-            saldo_corrente, acum_aportes, acum_divs = saldo_total_atual, 0.0, 0.0
+            meses_lista, patr_base_lista, aportes_lista, compostos_lista = [], [], [], []
+            saldo_corrente = saldo_total_atual
+            acum_aportes = 0.0
+            acum_juros_divs = 0.0
             
-            for i in range(13):
-                meses_lista.append(f"Mês {i}")
-                patr_inicial_acum.append(saldo_total_atual)
-                aportes_acumulados.append(acum_aportes)
-                dividendos_reinvestidos.append(acum_divs)
-                rendimento_mes = saldo_corrente * yield_mensal
-                acum_divs += rendimento_mes
+            # Motor de Juros Compostos Puro Mês a Mês
+            for m in range(13):
+                meses_lista.append(f"Mês {m}")
+                patr_base_lista.append(saldo_total_atual)
+                aportes_lista.append(acum_aportes)
+                compostos_lista.append(acum_juros_divs)
+                
+                # Para o mês seguinte, apuramos o rendimento:
+                ganho_capital = saldo_corrente * rentabilidade_ganho
+                # A base de dividendos cresce gradualmente de acordo com o crescimento projetado anual
+                fator_cresc_mensal = (1 + cresc_dividendos_anual) ** (m / 12)
+                dividendo_mes = base_div_mensal * fator_cresc_mensal
+                
+                acum_juros_divs += (ganho_capital + dividendo_mes)
                 acum_aportes += aporte_mensal_planejado
-                saldo_corrente += (rendimento_mes + aporte_mensal_planejado)
+                saldo_corrente += (ganho_capital + dividendo_mes + aporte_mensal_planejado)
                 
             df_proj_real = pd.DataFrame({
-                "Mês": meses_lista, "Patrimônio Inicial": patr_inicial_acum,
-                "Aportes Acumulados": aportes_acumulados, "Rendimento de Dividendos": dividendos_reinvestidos
+                "Mês": meses_lista, "Património Base (Bolsa + Fora)": patr_base_lista,
+                "Aportes Acumulados": aportes_lista, "Juros + Divs. Reinvestidos": compostos_lista
             })
             
-            # Gráfico Limpo de Barras Empilhadas (Sem Textos Sujos, tudo no Mouse)
-            df_proj_real_melt = df_proj_real.melt(id_vars=["Mês"], value_vars=["Patrimônio Inicial", "Aportes Acumulados", "Rendimento de Dividendos"], var_name="Componente", value_name="Valor")
-            fig_proj = px.bar(df_proj_real_melt, x="Mês", y="Valor", color="Componente", title="Evolução Patrimonial Composta", barmode='stack', color_discrete_sequence=["#2c3e50", "#2980b9", "#27ae60"])
-            fig_proj.update_traces(hovertemplate='%{x}<br>%{data.name}: R$ %{y:,.2f}<extra></extra>')
-            fig_proj.update_layout(xaxis_title="Linha do Tempo", yaxis_title="Montante Projetado (R$)", legend_title="Componentes", margin=dict(t=40))
+            df_proj_real_melt = df_proj_real.melt(id_vars=["Mês"], value_vars=["Patrimônio Base (Bolsa + Fora)", "Aportes Acumulados", "Juros + Divs. Reinvestidos"], var_name="Componente", value_name="Valor")
             
-            # Zoom Inteligente no Gráfico
+            fig_proj = px.area(df_proj_real_melt, x="Mês", y="Valor", color="Componente", title="Evolução Patrimonial Composta (Ganho de Capital + Dividendos)", color_discrete_sequence=["#34495e", "#2980b9", "#27ae60"])
+            fig_proj.update_traces(hovertemplate='%{x}<br>%{data.name}: R$ %{y:,.2f}<extra></extra>')
+            fig_proj.update_layout(xaxis_title="Linha do Tempo", yaxis_title="Montante Projetado (R$)", margin=dict(t=40))
+            
+            # Zoom Dinâmico do Especialista
             min_y = saldo_total_atual * 0.98
-            max_y = (saldo_total_atual + acum_aportes + acum_divs) * 1.02
+            max_y = saldo_corrente * 1.02
             fig_proj.update_yaxes(range=[min_y, max_y])
             st.plotly_chart(fig_proj, use_container_width=True)
 
