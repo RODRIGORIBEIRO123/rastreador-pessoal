@@ -242,7 +242,7 @@ if not st.session_state.df_base.empty:
         st.session_state.df_base = consolidar_carteira(df_editado) 
         df_macro, fundamentos_br = carregar_macro(), obter_fundamentos_brasil()
         progresso, total = st.progress(0), len(st.session_state.df_base)
-        dados_mercado, lines_simul_iniciais = {}, []
+        dados_mercado, linhas_simul_iniciais = {}, []
 
         for i, row in st.session_state.df_base.iterrows():
             ticker = str(row['Ativo']).strip().upper()
@@ -270,11 +270,11 @@ if not st.session_state.df_base.empty:
             cdi, ipca = calcular_macro_acumulado(df_macro, data_compra)
             
             dados_mercado[ticker] = {"Qtd": float(row['Quantidade']), "PM": float(row['Preço Médio']), "Data": data_compra, "Preço Atual": preco_atual, "Div_Total": divs_total, "CDI": cdi, "IPCA": ipca, "Setor": setor, "Tipo": tipo_ativo}
-            lines_simul_iniciais.append({"Ativo": ticker, "Cotação Atual": preco_atual, "VPA (Contábil)": vpa, "LPA Projetado": lpa, "Div. Projetado (R$)": divs_12m})
+            linhas_simul_iniciais.append({"Ativo": ticker, "Cotação Atual": preco_atual, "VPA (Contábil)": vpa, "LPA Projetado": lpa, "Div. Projetado (R$)": divs_12m})
             progresso.progress((i + 1) / total)
             
         st.session_state.dados_mercado = dados_mercado
-        st.session_state.df_simul = pd.DataFrame(lines_simul_iniciais)
+        st.session_state.df_simul = pd.DataFrame(linhas_simul_iniciais)
         st.success("Conexão Estabelecida com Sucesso!")
 
 # ==========================================
@@ -481,7 +481,7 @@ if not st.session_state.df_base.empty:
                                     cdi_custom, ipca_custom = calcular_macro_acumulado(df_macro, pd.to_datetime(dt_inicio_custom), pd.to_datetime(dt_fim_custom))
                                     linhas_custom.append({"Ativo": t, "Retorno Total (%)": evolucao_custom, "CDI Período": cdi_custom, "IPCA Período": ipca_custom})
                             except: pass
-                        if lines_custom:
+                        if linhas_custom:
                             df_custom = pd.DataFrame(linhas_custom)
                             df_custom['Período'] = f"{dt_inicio_custom.strftime('%d/%m/%Y')} a {dt_fim_custom.strftime('%d/%m/%Y')}"
                             df_custom_melt = df_custom.melt(id_vars=["Ativo", "Período"], value_vars=ind_custom, var_name="Indicador", value_name="Rentabilidade")
@@ -508,7 +508,6 @@ if not st.session_state.df_base.empty:
                 st.session_state.historico_chat.append({"role": "user", "content": prompt})
                 with st.chat_message("user"): st.write(prompt)
                 
-                # PROTOCOLO DE TRANSMISSÃO ROBUSTO (Ignorando bibliotecas externas instáveis)
                 contexto_carteira = df_perf_final[['Ativo', 'Qtd', 'Preço Médio', 'Preço Atual', 'Total Investido', 'Saldo Atual', 'Resultado (R$)', 'Total Div. (R$)', 'Evolução c/ Div']].to_csv(index=False, sep='|')
                 contexto_macro = f"Selic Corrente/Projetada: {proj_focus.get(f'Selic_{ano_atual}', 14.0)}% | IPCA Esperado: {proj_focus.get(f'IPCA_{ano_atual}', 5.33)}%"
                 
@@ -530,8 +529,8 @@ if not st.session_state.df_base.empty:
                 
                 if api_key:
                     try:
-                        # Chamada REST HTTP direta e à prova de falhas de ambiente
-                        url_api = f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key={api_key}"
+                        # 🔥 CORREÇÃO: Utilizando a rota v1beta recomendada para o modelo 1.5 Flash
+                        url_api = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key={api_key}"
                         headers_api = {"Content-Type": "application/json"}
                         payload_api = {
                             "contents": [{
