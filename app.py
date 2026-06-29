@@ -28,7 +28,7 @@ if 'dados_mercado' not in st.session_state: st.session_state.dados_mercado = {}
 if 'df_simul' not in st.session_state: st.session_state.df_simul = pd.DataFrame()
 
 if 'historico_chat' not in st.session_state:
-    st.session_state.historico_chat = [{"role": "assistant", "content": "Saudações. Sou a sua analista sênior integrada. O terminal foi reestruturado para mapear seus ativos e os indicadores do Focus em tempo real. Insira sua chave API corporativa para habilitar o motor Gemini 1.5 Flash."}]
+    st.session_state.historico_chat = [{"role": "assistant", "content": "Saudações. Sou a sua analista sênior integrada. O terminal foi reestruturado para mapear seus ativos e os indicadores do Focus em tempo real. Insira sua chave API corporativa para habilitar a inteligência profunda."}]
 
 @st.cache_data(ttl=86400)
 def carregar_macro():
@@ -511,33 +511,41 @@ if not st.session_state.df_base.empty:
                 contexto_carteira = df_perf_final[['Ativo', 'Qtd', 'Preço Médio', 'Preço Atual', 'Total Investido', 'Saldo Atual', 'Resultado (R$)', 'Total Div. (R$)', 'Evolução c/ Div']].to_csv(index=False, sep='|')
                 contexto_macro = f"Selic Corrente/Projetada: {proj_focus.get(f'Selic_{ano_atual}', 14.0)}% | IPCA Esperado: {proj_focus.get(f'IPCA_{ano_atual}', 5.33)}%"
                 
+                sys_prompt = f"""
+                Você é uma Analista de Investimentos Sênior (CNPI) e Gestora de Portfólio Escolarizada e de Elite.
+                Sua linguagem é estritamente corporativa, executiva, fria, baseada em dados e voltada a relatórios de alta governança.
+                Você tem acesso irrestrito ao banco de dados consolidado da carteira do usuário e ao cenário macroeconômico do Banco Central.
+                
+                [MATRIZ DE DADOS EM TEMPO REAL]
+                {contexto_carteira}
+                
+                [CENÁRIO MACRO FOCUS]
+                {contexto_macro}
+                
+                [DIRETRIZES DE RESPOSTA]
+                - Nunca responda como estagiário ("Acho que...", "Investir é bom..."). Use termos como Duration, Cost of Capital, Yield on Cost, Risco Sistêmico e Alocação Eficiente.
+                - Cruze os dados das tabelas para responder com números exatos do patrimônio dele.
+                """
+                
                 if api_key:
                     try:
                         import google.generativeai as genai
                         genai.configure(api_key=api_key)
-                        model = genai.GenerativeModel('gemini-1.5-flash')
                         
-                        sys_prompt = f"""
-                        Você é uma Analista de Investimentos Sênior (CNPI) e Gestora de Portfólio Escolarizada e de Elite.
-                        Sua linguagem é estritamente corporativa, executiva, fria, baseada em dados e voltada a relatórios de alta governança.
-                        Você tem acesso irrestrito ao banco de dados consolidado da carteira do usuário e ao cenário macroeconômico do Banco Central.
-                        
-                        [MATRIZ DE DADOS EM TEMPO REAL]
-                        {contexto_carteira}
-                        
-                        [CENÁRIO MACRO FOCUS]
-                        {contexto_macro}
-                        
-                        [DIRETRIZES DE RESPOSTA]
-                        - Nunca responda como estagiário ("Acho que...", "Investir é bom..."). Use termos como Duration, Cost of Capital, Yield on Cost, Risco Sistêmico e Alocação Eficiente.
-                        - Cruze os dados das tabelas para responder com números exatos do patrimônio dele.
-                        """
-                        response = model.generate_content([sys_prompt, prompt])
-                        resposta = response.text
-                    except ImportError:
-                        resposta = "⚠️ **AÇÃO NECESSÁRIA NO STREAMLIT CLOUD:**\nA biblioteca do Google não foi carregada pelo servidor.\n\nComo você já adicionou no `requirements.txt`, faça o seguinte:\n1. Clique em **'Manage app'** no canto inferior direito da tela.\n2. Clique nos **três pontinhos (⋮)** no menu superior.\n3. Escolha **'Reboot app'**.\nIsso forçará a nuvem a ler o seu requirements.txt e instalar o motor."
+                        # ESTRATÉGIA DE FALLBACK SÊNIOR (Tenta o 1.5, se falhar recua para o 1.0 Pro que é universal)
+                        try:
+                            model = genai.GenerativeModel('gemini-1.5-flash')
+                            response = model.generate_content([sys_prompt, prompt])
+                            resposta = response.text
+                        except Exception as e_flash:
+                            try:
+                                model = genai.GenerativeModel('gemini-1.0-pro')
+                                response = model.generate_content([sys_prompt, prompt])
+                                resposta = response.text
+                            except Exception as e_pro:
+                                resposta = f"⚠️ Falha de handshake com ambos os motores do Gemini. Verifique a validade e permissões da sua chave API no AI Studio. Detalhe técnico: {e_pro}"
                     except Exception as e:
-                        resposta = f"⚠️ Falha na API Gemini. Detalhe: {e}"
+                        resposta = f"⚠️ Erro estrutural ao carregar a biblioteca. Verifique o seu requirements.txt. Detalhe: {e}"
                 else:
                     p_u = prompt.upper()
                     if "CONCENTRAÇÃO" in p_u or "PESO" in p_u or "RISCO" in p_u or "SETOR" in p_u:
