@@ -242,7 +242,7 @@ if not st.session_state.df_base.empty:
         st.session_state.df_base = consolidar_carteira(df_editado) 
         df_macro, fundamentos_br = carregar_macro(), obter_fundamentos_brasil()
         progresso, total = st.progress(0), len(st.session_state.df_base)
-        dados_mercado, linhas_simul_iniciais = {}, []
+        dados_mercado, lines_simul_iniciais = {}, []
 
         for i, row in st.session_state.df_base.iterrows():
             ticker = str(row['Ativo']).strip().upper()
@@ -270,11 +270,11 @@ if not st.session_state.df_base.empty:
             cdi, ipca = calcular_macro_acumulado(df_macro, data_compra)
             
             dados_mercado[ticker] = {"Qtd": float(row['Quantidade']), "PM": float(row['Preço Médio']), "Data": data_compra, "Preço Atual": preco_atual, "Div_Total": divs_total, "CDI": cdi, "IPCA": ipca, "Setor": setor, "Tipo": tipo_ativo}
-            linhas_simul_iniciais.append({"Ativo": ticker, "Cotação Atual": preco_atual, "VPA (Contábil)": vpa, "LPA Projetado": lpa, "Div. Projetado (R$)": divs_12m})
+            lines_simul_iniciais.append({"Ativo": ticker, "Cotação Atual": preco_atual, "VPA (Contábil)": vpa, "LPA Projetado": lpa, "Div. Projetado (R$)": divs_12m})
             progresso.progress((i + 1) / total)
             
         st.session_state.dados_mercado = dados_mercado
-        st.session_state.df_simul = pd.DataFrame(linhas_simul_iniciais)
+        st.session_state.df_simul = pd.DataFrame(lines_simul_iniciais)
         st.success("Conexão Estabelecida com Sucesso!")
 
 # ==========================================
@@ -481,7 +481,7 @@ if not st.session_state.df_base.empty:
                                     cdi_custom, ipca_custom = calcular_macro_acumulado(df_macro, pd.to_datetime(dt_inicio_custom), pd.to_datetime(dt_fim_custom))
                                     linhas_custom.append({"Ativo": t, "Retorno Total (%)": evolucao_custom, "CDI Período": cdi_custom, "IPCA Período": ipca_custom})
                             except: pass
-                        if linhas_custom:
+                        if lines_custom:
                             df_custom = pd.DataFrame(linhas_custom)
                             df_custom['Período'] = f"{dt_inicio_custom.strftime('%d/%m/%Y')} a {dt_fim_custom.strftime('%d/%m/%Y')}"
                             df_custom_melt = df_custom.melt(id_vars=["Ativo", "Período"], value_vars=ind_custom, var_name="Indicador", value_name="Rentabilidade")
@@ -508,35 +508,44 @@ if not st.session_state.df_base.empty:
                 st.session_state.historico_chat.append({"role": "user", "content": prompt})
                 with st.chat_message("user"): st.write(prompt)
                 
+                # PROTOCOLO DE TRANSMISSÃO ROBUSTO (Ignorando bibliotecas externas instáveis)
                 contexto_carteira = df_perf_final[['Ativo', 'Qtd', 'Preço Médio', 'Preço Atual', 'Total Investido', 'Saldo Atual', 'Resultado (R$)', 'Total Div. (R$)', 'Evolução c/ Div']].to_csv(index=False, sep='|')
                 contexto_macro = f"Selic Corrente/Projetada: {proj_focus.get(f'Selic_{ano_atual}', 14.0)}% | IPCA Esperado: {proj_focus.get(f'IPCA_{ano_atual}', 5.33)}%"
                 
+                sys_prompt = f"""
+                Você é uma Analista de Investimentos Sênior (CNPI) e Gestora de Portfólio Escolarizada e de Elite.
+                Sua linguagem é estritamente corporativa, executiva, fria, baseada em dados e voltada a relatórios de alta governança.
+                Você tem acesso irrestrito ao banco de dados consolidado da carteira do usuário e ao cenário macroeconômico do Banco Central.
+                
+                [MATRIZ DE DADOS EM TEMPO REAL]
+                {contexto_carteira}
+                
+                [CENÁRIO MACRO FOCUS]
+                {contexto_macro}
+                
+                [DIRETRIZES DE RESPOSTA]
+                - Nunca responda como estagiário ("Acho que...", "Investir é bom..."). Use termos como Duration, Cost of Capital, Yield on Cost, Risco Sistêmico e Alocação Eficiente.
+                - Cruze os dados das tabelas para responder com números exatos do patrimônio dele.
+                """
+                
                 if api_key:
                     try:
-                        import google.generativeai as genai
-                        genai.configure(api_key=api_key)
-                        # 🔥 CORREÇÃO: O modelo 'gemini-1.5-flash' é o mais recomendado, rápido e livre de deprecation.
-                        model = genai.GenerativeModel('gemini-1.5-flash') 
+                        # Chamada REST HTTP direta e à prova de falhas de ambiente
+                        url_api = f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key={api_key}"
+                        headers_api = {"Content-Type": "application/json"}
+                        payload_api = {
+                            "contents": [{
+                                "parts": [{"text": f"{sys_prompt}\n\nPergunta do Gestor: {prompt}"}]
+                            }]
+                        }
+                        res_api = requests.post(url_api, json=payload_api, headers=headers_api, timeout=15)
                         
-                        sys_prompt = f"""
-                        Você é uma Analista de Investimentos Sênior (CNPI) e Gestora de Portfólio Escolarizada e de Elite.
-                        Sua linguagem é estritamente corporativa, executiva, fria, baseada em dados e voltada a relatórios de alta governança.
-                        Você tem acesso irrestrito ao banco de dados consolidado da carteira do usuário e ao cenário macroeconômico do Banco Central.
-                        
-                        [MATRIZ DE DADOS EM TEMPO REAL]
-                        {contexto_carteira}
-                        
-                        [CENÁRIO MACRO FOCUS]
-                        {contexto_macro}
-                        
-                        [DIRETRIZES DE RESPOSTA]
-                        - Nunca responda como estagiário ("Acho que...", "Investir é bom..."). Use termos como Duration, Cost of Capital, Yield on Cost, Risco Sistêmico e Alocação Eficiente.
-                        - Cruze os dados das tabelas para responder com números exatos do patrimônio dele.
-                        """
-                        response = model.generate_content([sys_prompt, prompt])
-                        resposta = response.text
+                        if res_api.status_code == 200:
+                            resposta = res_api.json()['contents'][0]['parts'][0]['text']
+                        else:
+                            resposta = f"⚠️ Erro na resposta do servidor (Status {res_api.status_code}): {res_api.text}"
                     except Exception as e:
-                        resposta = f"⚠️ Falha de handshake com o motor Gemini. Verifique a validade da chave. Detalhe: {e}"
+                        resposta = f"⚠️ Falha de handshake de infraestrutura com a API. Detalhe: {e}"
                 else:
                     p_u = prompt.upper()
                     if "CONCENTRAÇÃO" in p_u or "PESO" in p_u or "RISCO" in p_u or "SETOR" in p_u:
@@ -551,4 +560,4 @@ if not st.session_state.df_base.empty:
                         resposta = f"**[Aviso do Comitê CNPI]** Chave de API ausente. Para liberar o processamento interpretativo e conversação livre de nível Sênior, insira o token no topo da aba. O motor local está limitado a relatórios quantitativos estruturados sobre 'concentração', 'risco de setor' ou 'assimetria Bazin'."
                 
                 st.session_state.historico_chat.append({"role": "assistant", "content": resposta})
-                with st.chat_message("assistant"): st.write(resposta)
+                st.rerun()
