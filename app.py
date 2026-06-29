@@ -515,7 +515,8 @@ if not st.session_state.df_base.empty:
                     try:
                         import google.generativeai as genai
                         genai.configure(api_key=api_key)
-                        model = genai.GenerativeModel('gemini-1.5-pro') # <--- CORREÇÃO APLICADA AQUI
+                        # 🔥 CORREÇÃO: O modelo 'gemini-1.5-flash' é o mais recomendado, rápido e livre de deprecation.
+                        model = genai.GenerativeModel('gemini-1.5-flash') 
                         
                         sys_prompt = f"""
                         Você é uma Analista de Investimentos Sênior (CNPI) e Gestora de Portfólio Escolarizada e de Elite.
