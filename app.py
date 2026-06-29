@@ -27,7 +27,6 @@ if 'df_base' not in st.session_state: st.session_state.df_base = pd.DataFrame()
 if 'dados_mercado' not in st.session_state: st.session_state.dados_mercado = {}
 if 'df_simul' not in st.session_state: st.session_state.df_simul = pd.DataFrame()
 
-# Inicialização do Histórico do Comitê de IA
 if 'historico_chat' not in st.session_state:
     st.session_state.historico_chat = [{"role": "assistant", "content": "Saudações. Sou a sua analista sênior integrada. O terminal foi reestruturado para mapear seus ativos e os indicadores do Focus em tempo real. Insira sua chave API corporativa para análises macro discricionárias profundas ou execute diagnósticos quantitativos diretamente."}]
 
@@ -316,8 +315,6 @@ if not st.session_state.df_base.empty:
         m3.metric("💸 Renda Acumulada (Ações)", f"R$ {df_acoes['Total Div. (R$)'].sum():,.2f}", help=tooltip_msg)
         m4.metric("💸 Renda Acumulada (FIIs)", f"R$ {df_fiis['Total Div. (R$)'].sum():,.2f}", help=tooltip_msg)
 
-        st.download_button(label="📥 Exportar Relatório (Excel)", data=gerar_excel_premium(df_perf_final, st.session_state.df_simul), file_name="Relatorio_Carteira.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-
         tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
             "📊 Visão Geral", "💰 Bazin (Renda)", "🏢 Graham (Valor)", 
             "⚖️ Pesos e Setores", "🎯 Recomendações e Projeções", "📈 Gráficos Interativos", "💬 Assistente IA"
@@ -329,7 +326,7 @@ if not st.session_state.df_base.empty:
         with tab2:
             yield_desejado = st.number_input("Taxa de Risco Exigida (%):", value=6.0, step=0.5) / 100.0
             df_bazin_view = st.session_state.df_simul[["Ativo", "Cotação Atual", "Div. Proj. (R$)"] if "Div. Proj. (R$)" in st.session_state.df_simul.columns else ["Ativo", "Cotação Atual", "Div. Projetado (R$)"]].copy()
-            df_bazin_editado = st.data_editor(df_bazin_view, use_container_width=True, hide_index=True, disabled=["Ativo", "Cotação Atual"], key="edit_bazin", column_config={"Cotação Atual": st.column_config.NumberColumn(format="R$ %.2f"), "Div. Projetado (R$)": st.column_config.NumberColumn(format="R$ %.2f")})
+            df_bazin_editado = st.data_editor(df_bazin_view, use_container_width=True, hide_index=True, disabled=["Ativo", "Cotação Atual"], key="edit_bazin")
             st.session_state.df_simul["Div. Projetado (R$)"] = df_bazin_editado.iloc[:, 2]
             
             linhas_bazin = []
@@ -342,7 +339,7 @@ if not st.session_state.df_base.empty:
 
         with tab3:
             df_graham_view = st.session_state.df_simul[["Ativo", "Cotação Atual", "VPA (Contábil)", "LPA Projetado"]].copy()
-            df_graham_editado = st.data_editor(df_graham_view, use_container_width=True, hide_index=True, disabled=["Ativo", "Cotação Atual"], key="edit_graham", column_config={"Cotação Atual": st.column_config.NumberColumn(format="R$ %.2f"), "VPA (Contábil)": st.column_config.NumberColumn(format="R$ %.2f"), "LPA Projetado": st.column_config.NumberColumn(format="R$ %.2f")})
+            df_graham_editado = st.data_editor(df_graham_view, use_container_width=True, hide_index=True, disabled=["Ativo", "Cotação Atual"], key="edit_graham")
             st.session_state.df_simul["VPA (Contábil)"] = df_graham_editado["VPA (Contábil)"]
             st.session_state.df_simul["LPA Projetado"] = df_graham_editado["LPA Projetado"]
             
@@ -385,7 +382,6 @@ if not st.session_state.df_base.empty:
             df_recs = pd.merge(df_perf_final[['Ativo', 'Tipo']], st.session_state.df_rec_bazin[['Ativo', 'Margem Segurança']], on='Ativo', how='left').rename(columns={'Margem Segurança': 'Margem Bazin (%)'})
             df_recs = pd.merge(df_recs, st.session_state.df_rec_graham[['Ativo', 'Margem Segurança']], on='Ativo', how='left').rename(columns={'Margem Segurança': 'Margem Graham (%)'})
             
-            # ADICIONADO: CAMPOS DE DIGITAÇÃO PARA MARGENS RECOMENDADAS TÁTICAS (PRÊMIO DE RISCO LIBERADO)
             st.markdown("##### ⚖️ Parametrização Exigida do Prêmio de Risco")
             c_m1, c_m2 = st.columns(2)
             margem_graham_exigida = c_m1.number_input("Margem de Segurança Mínima de Graham (Ações %):", value=15.0, step=1.0)
@@ -496,7 +492,7 @@ if not st.session_state.df_base.empty:
                             st.dataframe(df_custom, use_container_width=True, hide_index=True)
 
         # ==========================================
-        # NOVO: ABA 7 - REESTRUTURAÇÃO COMPLETA DA IA SÊNIOR
+        # ABA 7: TERMINAL DE IA PARAMETRIZADO NATIVO
         # ==========================================
         with tab7:
             st.markdown("### 🏢 Comitê de Alocação IA - Visão CNPI Sênior")
@@ -512,8 +508,8 @@ if not st.session_state.df_base.empty:
                 st.session_state.historico_chat.append({"role": "user", "content": prompt})
                 with st.chat_message("user"): st.write(prompt)
                 
-                # Serialização estruturada dos dados em tempo real para alimentação da IA
-                contexto_carteira = df_perf_final[['Ativo', 'Qtd', 'Preço Médio', 'Preço Atual', 'Total Investido', 'Saldo Atual', 'Resultado (R$)', 'Total Div. (R$)', 'Evolução c/ Div']].to_markdown(index=False)
+                # CÓDIGO CORRIGIDO: Substituição de to_markdown por to_csv para evitar a dependência 'tabulate'
+                contexto_carteira = df_perf_final[['Ativo', 'Qtd', 'Preço Médio', 'Preço Atual', 'Total Investido', 'Saldo Atual', 'Resultado (R$)', 'Total Div. (R$)', 'Evolução c/ Div']].to_csv(index=False, sep='|')
                 contexto_macro = f"Selic Corrente/Projetada: {proj_focus.get(f'Selic_{ano_atual}', 14.0)}% | IPCA Esperado: {proj_focus.get(f'IPCA_{ano_atual}', 5.33)}%"
                 
                 if api_key:
@@ -542,7 +538,6 @@ if not st.session_state.df_base.empty:
                     except Exception as e:
                         resposta = f"⚠️ Falha de handshake com o motor Gemini. Verifique a validade da chave. Detalhe: {e}"
                 else:
-                    # ENGINE DE COMPILAÇÃO QUANTITATIVA LOCAL SÊNIOR (Caso rode sem chave)
                     p_u = prompt.upper()
                     if "CONCENTRAÇÃO" in p_u or "PESO" in p_u or "RISCO" in p_u or "SETOR" in p_u:
                         maior_ativo = df_perf_final.sort_values('Saldo Atual', ascending=False).iloc[0]
