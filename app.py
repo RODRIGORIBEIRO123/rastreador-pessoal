@@ -529,8 +529,8 @@ if not st.session_state.df_base.empty:
                 
                 if api_key:
                     try:
-                        # 🔥 CORREÇÃO: Utilizando a rota v1beta recomendada para o modelo 1.5 Flash
-                        url_api = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key={api_key}"
+                        # 🔥 CORREÇÃO: Utilizando a string pura e exata do modelo suportado na rota v1beta.
+                        url_api = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
                         headers_api = {"Content-Type": "application/json"}
                         payload_api = {
                             "contents": [{
