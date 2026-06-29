@@ -508,7 +508,6 @@ if not st.session_state.df_base.empty:
                 st.session_state.historico_chat.append({"role": "user", "content": prompt})
                 with st.chat_message("user"): st.write(prompt)
                 
-                # CÓDIGO CORRIGIDO: Substituição de to_markdown por to_csv para evitar a dependência 'tabulate'
                 contexto_carteira = df_perf_final[['Ativo', 'Qtd', 'Preço Médio', 'Preço Atual', 'Total Investido', 'Saldo Atual', 'Resultado (R$)', 'Total Div. (R$)', 'Evolução c/ Div']].to_csv(index=False, sep='|')
                 contexto_macro = f"Selic Corrente/Projetada: {proj_focus.get(f'Selic_{ano_atual}', 14.0)}% | IPCA Esperado: {proj_focus.get(f'IPCA_{ano_atual}', 5.33)}%"
                 
@@ -516,7 +515,7 @@ if not st.session_state.df_base.empty:
                     try:
                         import google.generativeai as genai
                         genai.configure(api_key=api_key)
-                        model = genai.GenerativeModel('gemini-pro')
+                        model = genai.GenerativeModel('gemini-1.5-pro') # <--- CORREÇÃO APLICADA AQUI
                         
                         sys_prompt = f"""
                         Você é uma Analista de Investimentos Sênior (CNPI) e Gestora de Portfólio Escolarizada e de Elite.
