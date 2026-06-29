@@ -492,19 +492,19 @@ if not st.session_state.df_base.empty:
                             st.dataframe(df_custom, use_container_width=True, hide_index=True)
 
         # ==========================================
-        # ABA 7: TERMINAL DE IA PARAMETRIZADO NATIVO
+        # ABA 7: TERMINAL DE IA PARAMETRIZADO NATIVO (REDUNDÂNCIA DUPLA HTTP)
         # ==========================================
         with tab7:
             st.markdown("### 🏢 Comitê de Alocação IA - Visão CNPI Sênior")
-            st.markdown("Insira sua chave de API corporativa para habilitar o processamento analítico profundo. Seus dados de carteira e os indicadores do Focus serão convertidos e injetados de forma estrita como memória contextual.")
+            st.markdown("Insira sua chave de API corporativa para habilitar o processamento analítico profundo. O sistema possui contingência automática contra quedas regionais do Google.")
             
-            api_key = st.text_input("Chave API do Google Gemini (Opcional):", type="password", help="Gere uma chave segura e gratuita no Google AI Studio")
+            api_key = st.text_input("Chave API do Google Gemini (Opcional):", type="password")
             
             st.write("---")
             for msg in st.session_state.historico_chat:
                 with st.chat_message(msg["role"]): st.write(msg["content"])
                 
-            if prompt := st.chat_input("Ex: Qual o impacto da Selic terminal a 14% na nossa carteira de FIIs?"):
+            if prompt := st.chat_input("Ex: Baseado no Focus atual, quais FIIs eu devo reavaliar?"):
                 st.session_state.historico_chat.append({"role": "user", "content": prompt})
                 with st.chat_message("user"): st.write(prompt)
                 
@@ -512,9 +512,9 @@ if not st.session_state.df_base.empty:
                 contexto_macro = f"Selic Corrente/Projetada: {proj_focus.get(f'Selic_{ano_atual}', 14.0)}% | IPCA Esperado: {proj_focus.get(f'IPCA_{ano_atual}', 5.33)}%"
                 
                 sys_prompt = f"""
-                Você é uma Analista de Investimentos Sênior (CNPI) e Gestora de Portfólio Escolarizada e de Elite.
-                Sua linguagem é estritamente corporativa, executiva, fria, baseada em dados e voltada a relatórios de alta governança.
-                Você tem acesso irrestrito ao banco de dados consolidado da carteira do usuário e ao cenário macroeconômico do Banco Central.
+                Você é uma Analista de Investimentos Sênior (CNPI) e Gestora de Portfólio.
+                Sua linguagem é corporativa, executiva, fria, baseada em dados e voltada a relatórios de alta governança.
+                Você tem acesso irrestrito ao banco de dados da carteira do usuário e ao cenário macroeconômico do Banco Central.
                 
                 [MATRIZ DE DADOS EM TEMPO REAL]
                 {contexto_carteira}
@@ -523,41 +523,44 @@ if not st.session_state.df_base.empty:
                 {contexto_macro}
                 
                 [DIRETRIZES DE RESPOSTA]
-                - Nunca responda como estagiário ("Acho que...", "Investir é bom..."). Use termos como Duration, Cost of Capital, Yield on Cost, Risco Sistêmico e Alocação Eficiente.
-                - Cruze os dados das tabelas para responder com números exatos do patrimônio dele.
+                - Não use linguagem de iniciante. Use termos técnicos apropriados.
+                - Cruze os dados para fornecer números exatos na sua resposta.
                 """
                 
                 if api_key:
+                    payload = {"contents": [{"parts": [{"text": f"{sys_prompt}\n\nPergunta do Gestor: {prompt}"}]}]}
+                    headers = {"Content-Type": "application/json"}
+                    
                     try:
-                        import google.generativeai as genai
-                        genai.configure(api_key=api_key)
+                        # TENTATIVA 1: O modelo ultrarrápido 1.5 Flash na rota v1beta
+                        url_flash = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
+                        res = requests.post(url_flash, json=payload, headers=headers, timeout=15)
                         
-                        # ESTRATÉGIA DE FALLBACK SÊNIOR (Tenta o 1.5, se falhar recua para o 1.0 Pro que é universal)
-                        try:
-                            model = genai.GenerativeModel('gemini-1.5-flash')
-                            response = model.generate_content([sys_prompt, prompt])
-                            resposta = response.text
-                        except Exception as e_flash:
-                            try:
-                                model = genai.GenerativeModel('gemini-1.0-pro')
-                                response = model.generate_content([sys_prompt, prompt])
-                                resposta = response.text
-                            except Exception as e_pro:
-                                resposta = f"⚠️ Falha de handshake com ambos os motores do Gemini. Verifique a validade e permissões da sua chave API no AI Studio. Detalhe técnico: {e_pro}"
+                        if res.status_code == 200:
+                            resposta = res.json()['contents'][0]['parts'][0]['text']
+                        else:
+                            # TENTATIVA 2 (FALLBACK SEGURO): O modelo clássico universal 1.0 Pro na rota raiz v1
+                            url_pro = f"https://generativelanguage.googleapis.com/v1/models/gemini-pro:generateContent?key={api_key}"
+                            res_fallback = requests.post(url_pro, json=payload, headers=headers, timeout=15)
+                            
+                            if res_fallback.status_code == 200:
+                                resposta = res_fallback.json()['contents'][0]['parts'][0]['text']
+                            else:
+                                resposta = f"⚠️ O Google recusou a conexão em ambas as rotas. Verifique sua chave. Erro final: {res_fallback.text}"
                     except Exception as e:
-                        resposta = f"⚠️ Erro estrutural ao carregar a biblioteca. Verifique o seu requirements.txt. Detalhe: {e}"
+                        resposta = f"⚠️ Falha de comunicação de rede. Detalhe: {e}"
                 else:
                     p_u = prompt.upper()
                     if "CONCENTRAÇÃO" in p_u or "PESO" in p_u or "RISCO" in p_u or "SETOR" in p_u:
                         maior_ativo = df_perf_final.sort_values('Saldo Atual', ascending=False).iloc[0]
                         maior_setor = df_perf_final.groupby('Setor')['Saldo Atual'].sum().idxmax()
                         peso_setor = (df_perf_final.groupby('Setor')['Saldo Atual'].sum().max() / df_perf_final['Saldo Atual'].sum()) * 100
-                        resposta = f"**[Diagnóstico Quantitativo Sênior]** Analisando os desvios padrão de alocação, identifico um risco de cauda por concentração setorial em **{maior_setor}**, que responde por **{peso_setor:.2f}%** do capital total exposto. No nível individual, o ativo de maior peso é **{maior_ativo['Ativo']}** ({maior_ativo['Saldo Atual']/df_perf_final['Saldo Atual'].sum()*100:.2f}%). Sob uma Selic de {proj_focus.get(f'Selic_{ano_atual}', 14.0)}%, essa concentração eleva o custo de oportunidade do portfólio."
+                        resposta = f"**[Diagnóstico Quantitativo Sênior]** O seu risco de cauda setorial concentra-se em **{maior_setor}** ({peso_setor:.2f}% do capital). Sob uma Selic projetada de {proj_focus.get(f'Selic_{ano_atual}', 14.0)}%, este nível de exposição exige monitorização estrita do custo de oportunidade."
                     elif "BAZIN" in p_u or "TETO" in p_u or "COMPRA" in p_u:
                         ativo_bazin = st.session_state.df_rec_bazin.sort_values('Margem Segurança', ascending=False).iloc[0]
-                        resposta = f"**[Auditoria de Valuation - Renda]** Cruzando o preço de tela com a curva histórica de proventos, o ativo que apresenta o prêmio de risco mais distorcido a seu favor (desconto tático) é **{ativo_bazin['Ativo']}**, operando com uma Margem de Segurança de **{ativo_bazin['Margem Segurança']:.2f}%** frente ao preço teto estabelecido."
+                        resposta = f"**[Auditoria de Valuation - Renda]** De acordo com a base histórica de dividendos, o ativo com maior assimetria positiva de preço (desconto tático) é **{ativo_bazin['Ativo']}**, apresentando Margem de Segurança de **{ativo_bazin['Margem Segurança']:.2f}%**."
                     else:
-                        resposta = f"**[Aviso do Comitê CNPI]** Chave de API ausente. Para liberar o processamento interpretativo e conversação livre de nível Sênior, insira o token no topo da aba. O motor local está limitado a relatórios quantitativos estruturados sobre 'concentração', 'risco de setor' ou 'assimetria Bazin'."
+                        resposta = f"**[Modo Local]** Chave de API ausente. Sem o token, estou limitada a processar relatórios quantitativos pré-programados sobre 'concentração setorial' ou 'assimetria Bazin'. Por favor, insira a chave para liberar a inferência profunda."
                 
                 st.session_state.historico_chat.append({"role": "assistant", "content": resposta})
                 st.rerun()
