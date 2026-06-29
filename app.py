@@ -492,11 +492,11 @@ if not st.session_state.df_base.empty:
                             st.dataframe(df_custom, use_container_width=True, hide_index=True)
 
         # ==========================================
-        # ABA 7: TERMINAL DE IA PARAMETRIZADO NATIVO COM AUTO-DISCOVERY
+        # ABA 7: TERMINAL DE IA PARAMETRIZADO NATIVO COM AUTO-DISCOVERY + FALLBACK 429
         # ==========================================
         with tab7:
             st.markdown("### 🏢 Comitê de Alocação IA - Visão CNPI Sênior")
-            st.markdown("Insira sua chave de API corporativa para habilitar o processamento analítico profundo. O motor fará o rastreamento automático do modelo ideal para a sua credencial.")
+            st.markdown("Insira sua chave de API corporativa para habilitar o processamento analítico profundo. O motor fará o rastreamento automático do modelo ideal para a sua credencial, com contingência ativada.")
             
             api_key = st.text_input("Chave API do Google Gemini (Opcional):", type="password")
             
@@ -529,7 +529,6 @@ if not st.session_state.df_base.empty:
                 
                 if api_key:
                     try:
-                        # 1. MOTOR DE DESCOBERTA AUTOMÁTICA (AUTO-DISCOVERY DE MODELOS)
                         url_models = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
                         res_models = requests.get(url_models, timeout=10)
                         
@@ -537,31 +536,40 @@ if not st.session_state.df_base.empty:
                             modelos_disponiveis = res_models.json().get('models', [])
                             modelos_geracao = [m['name'] for m in modelos_disponiveis if 'generateContent' in m.get('supportedGenerationMethods', [])]
                             
-                            # Filtra o melhor modelo Gemini disponível na lista da sua chave
-                            modelo_alvo = None
-                            for pref in ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-1.0-pro', 'gemini-pro']:
+                            # IGNORAMOS OS MODELOS '3.1' OU EXPERIMENTAIS PAGOS - FOCO TOTAL NOS FREE-TIER MAIS ROBUSTOS
+                            modelos_prioridade = ['gemini-1.5-flash', 'gemini-1.0-pro', 'gemini-1.5-pro']
+                            modelos_candidatos = []
+                            for pref in modelos_prioridade:
                                 for m_disp in modelos_geracao:
-                                    if pref in m_disp:
-                                        modelo_alvo = m_disp
-                                        break
-                                if modelo_alvo: break
-                                
-                            if not modelo_alvo and modelos_geracao:
-                                modelo_alvo = modelos_geracao[0] # Fallback extremo
-                                
-                            if modelo_alvo:
-                                # 2. REQUISIÇÃO DIRETA AO MODELO DESCOBERTO E COMPROVADO
+                                    if pref in m_disp and m_disp not in modelos_candidatos:
+                                        modelos_candidatos.append(m_disp)
+                                        
+                            if not modelos_candidatos:
+                                modelos_candidatos = [m for m in modelos_geracao if 'vision' not in m.lower()]
+                            
+                            sucesso_api = False
+                            for modelo_alvo in modelos_candidatos:
                                 url_api = f"https://generativelanguage.googleapis.com/v1beta/{modelo_alvo}:generateContent?key={api_key}"
                                 payload = {"contents": [{"parts": [{"text": f"{sys_prompt}\n\nPergunta do Gestor: {prompt}"}]}]}
                                 headers = {"Content-Type": "application/json"}
                                 
                                 res_api = requests.post(url_api, json=payload, headers=headers, timeout=20)
+                                
                                 if res_api.status_code == 200:
                                     resposta = res_api.json()['contents'][0]['parts'][0]['text']
+                                    sucesso_api = True
+                                    break
+                                elif res_api.status_code == 429:
+                                    # Erro 429 (Cota Excedida / Zero Limit): Pula silenciosamente para o próximo modelo da lista
+                                    continue
                                 else:
                                     resposta = f"⚠️ Erro ao gerar conteúdo (Status {res_api.status_code}): {res_api.text}"
-                            else:
-                                resposta = "⚠️ Nenhum modelo de geração de texto (generateContent) encontrado para esta chave de API. Verifique as permissões no AI Studio."
+                                    sucesso_api = True # Para quebrar o loop em caso de erro de sintaxe/chave
+                                    break
+                                    
+                            if not sucesso_api and res_api.status_code == 429:
+                                resposta = "⚠️ Análise de Infraestrutura: Todos os modelos disponíveis para a sua chave atingiram o limite de cota gratuita (Error 429 - Resource Exhausted). O Google exige que aguarde alguns minutos para fazer novas requisições ou habilite o plano de faturação no AI Studio. A IA local quantitativa assumirá as requisições até o desbloqueio."
+                                
                         else:
                             resposta = f"⚠️ Chave inválida ou bloqueada pelo Google. Erro de Autenticação: {res_models.text}"
                     except Exception as e:
