@@ -42,6 +42,7 @@ def obter_fundamentos_brasil():
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
         res = requests.get(url, headers=headers, timeout=10)
         df = pd.read_html(io.StringIO(res.text), decimal=',', thousands='.')[0]
+        
         fundamentos = {}
         for _, row in df.iterrows():
             t = str(row['Papel']).strip().upper()
@@ -53,34 +54,47 @@ def obter_fundamentos_brasil():
         return fundamentos
     except: return {}
 
-# 📡 NOVO MOTOR BACEN: Mais robusto para capturar os dados corretos
+# 📡 NOVO MOTOR BACEN: Busca Estrita pelas Projeções Anuais
 @st.cache_data(ttl=86400)
 def obter_projecoes_focus():
     ano_atual = pd.Timestamp.now().year
+    
+    # Fallback Seguro: Atualizado com Boletim Focus de 26/06/2026
+    fallback = {
+        f"IPCA_{ano_atual}": 5.33, 
+        f"Selic_{ano_atual}": 14.00, 
+        f"IPCA_{ano_atual+1}": 4.15, 
+        f"Selic_{ano_atual+1}": 12.00
+    }
+    
     try:
-        # Acesso via API OData Oficial filtrando para garantir que pegamos os dados mais recentes (DataReferencia)
-        url = f"https://olinda.bcb.gov.br/olinda/servico/Expectativas/versao/v1/odata/ExpectativaMercadoMensais?$top=100&$filter=Indicador%20eq%20'IPCA'%20or%20Indicador%20eq%20'Selic'&$orderby=Data%20desc&$format=json"
+        url = "https://olinda.bcb.gov.br/olinda/servico/Expectativas/versao/v1/odata/ExpectativasMercadoAnuais?$top=100&$filter=Indicador%20eq%20'IPCA'%20or%20Indicador%20eq%20'Selic'&$orderby=Data%20desc&$format=json"
         res = requests.get(url, timeout=5).json()
         
         if 'value' in res and len(res['value']) > 0:
             df = pd.DataFrame(res['value'])
             
-            # Puxamos as projeções para Dezembro do ano atual e Dezembro do próximo ano
-            df_atual = df[(df['DataReferencia'].str.startswith(str(ano_atual))) & (df['DataReferencia'].str.endswith('12'))]
-            df_prox = df[(df['DataReferencia'].str.startswith(str(ano_atual+1))) & (df['DataReferencia'].str.endswith('12'))]
+            # Isola apenas a data de referência de extração mais recente
+            data_recente = df['Data'].max()
+            df = df[df['Data'] == data_recente]
             
-            ipca_atual = df_atual[df_atual['Indicador'] == 'IPCA']['Mediana'].values[0] if not df_atual[df_atual['Indicador'] == 'IPCA'].empty else 3.80
-            selic_atual = df_atual[df_atual['Indicador'] == 'Selic']['Mediana'].values[0] if not df_atual[df_atual['Indicador'] == 'Selic'].empty else 10.50
+            df_atual = df[df['DataReferencia'] == str(ano_atual)]
+            df_prox = df[df['DataReferencia'] == str(ano_atual+1)]
             
-            ipca_prox = df_prox[df_prox['Indicador'] == 'IPCA']['Mediana'].values[0] if not df_prox[df_prox['Indicador'] == 'IPCA'].empty else 3.90
-            selic_prox = df_prox[df_prox['Indicador'] == 'Selic']['Mediana'].values[0] if not df_prox[df_prox['Indicador'] == 'Selic'].empty else 9.50
-            
-            return {f"IPCA_{ano_atual}": float(ipca_atual), f"Selic_{ano_atual}": float(selic_atual), f"IPCA_{ano_atual+1}": float(ipca_prox), f"Selic_{ano_atual+1}": float(selic_prox)}, ano_atual
+            if not df_atual[df_atual['Indicador'] == 'IPCA'].empty:
+                fallback[f"IPCA_{ano_atual}"] = float(df_atual[df_atual['Indicador'] == 'IPCA']['Mediana'].values[0])
+            if not df_atual[df_atual['Indicador'] == 'Selic'].empty:
+                fallback[f"Selic_{ano_atual}"] = float(df_atual[df_atual['Indicador'] == 'Selic']['Mediana'].values[0])
+            if not df_prox[df_prox['Indicador'] == 'IPCA'].empty:
+                fallback[f"IPCA_{ano_atual+1}"] = float(df_prox[df_prox['Indicador'] == 'IPCA']['Mediana'].values[0])
+            if not df_prox[df_prox['Indicador'] == 'Selic'].empty:
+                fallback[f"Selic_{ano_atual+1}"] = float(df_prox[df_prox['Indicador'] == 'Selic']['Mediana'].values[0])
+                
+            return fallback, ano_atual
         else:
-            raise ValueError("JSON vazio")
+            return fallback, ano_atual
     except: 
-        # Fallback Seguro com os dados do Focus atualizados para meados de 2024 (Mercado Real)
-        return {f"IPCA_{ano_atual}": 3.90, f"Selic_{ano_atual}": 10.50, f"IPCA_{ano_atual+1}": 3.78, f"Selic_{ano_atual+1}": 9.50}, ano_atual
+        return fallback, ano_atual
 
 def calcular_macro_acumulado(df_macro, data_inicio, data_fim=None):
     if df_macro is None or df_macro.empty or pd.isna(data_inicio): return 0.0, 0.0
@@ -236,7 +250,7 @@ if st.sidebar.button("🚀 Carregar e Rodar Aplicativo", use_container_width=Tru
         st.sidebar.error("⚠️ Insira o arquivo principal para iniciar.")
 
 # ==========================================
-# 3. INTERFACE DE CONTROLE
+# 3. INTERFACE DE CONTROLE E LÓGICA INCREMENTAL
 # ==========================================
 if not st.session_state.df_base.empty:
     st.markdown("### 2. Controle do Banco de Dados")
@@ -328,9 +342,6 @@ if not st.session_state.df_base.empty:
         df_perf_final = pd.DataFrame(linhas_perf)
 
         st.write("---")
-        # ==========================================
-        # DASHBOARD EXECUTIVO (MÉTRICAS)
-        # ==========================================
         st.markdown("### 🏆 Visão Global do Portfólio")
         
         data_mais_antiga = st.session_state.df_base['Data Média'].min()
@@ -425,7 +436,6 @@ if not st.session_state.df_base.empty:
             with c_t3: st.dataframe(gerar_tabela_peso('Setor'), use_container_width=True, hide_index=True, column_config={"Saldo Atual": st.column_config.NumberColumn(format="R$ %.2f"), "Peso (%)": st.column_config.NumberColumn(format="%.2f %%")})
 
         with tab5:
-            # Integração Boletim Focus BCB
             proj_focus, ano_atual = obter_projecoes_focus()
             st.markdown(f"### 🇧🇷 Expectativas Macroeconômicas (Boletim Focus Bacen)")
             st.info(f"**IPCA {ano_atual}:** {proj_focus.get(f'IPCA_{ano_atual}', '--')}%  |  **Selic {ano_atual}:** {proj_focus.get(f'Selic_{ano_atual}', '--')}%  ||  **IPCA {ano_atual+1}:** {proj_focus.get(f'IPCA_{ano_atual+1}', '--')}%  |  **Selic {ano_atual+1}:** {proj_focus.get(f'Selic_{ano_atual+1}', '--')}%")
@@ -459,9 +469,8 @@ if not st.session_state.df_base.empty:
             st.divider()
             
             st.markdown("### ❄️ Projeção Bola de Neve Completa (Juros Compostos Reais)")
-            st.markdown("Ajuste os parâmetros abaixo para simular o crescimento do seu patrimônio com reinvestimento de dividendos e novos aportes.")
+            st.markdown("Neste simulador institucional, ajustamos os Aportes Mensais, a Rentabilidade do Ganho de Capital, e a curva exponencial dos Dividendos e do Patrimônio fora de bolsa.")
             
-            # PARÂMETROS FINANCEIROS DE ALTO NÍVEL
             c_p1, c_p2, c_p3, c_p4 = st.columns(4)
             patrimonio_fora = c_p1.number_input("Patrimônio Fora da Bolsa (R$):", value=0.0, step=10000.0)
             aporte_mensal_planejado = c_p2.number_input("Aporte Mensal (R$):", value=2000.0, step=500.0)
@@ -477,7 +486,6 @@ if not st.session_state.df_base.empty:
             acum_aportes = 0.0
             acum_juros_divs = 0.0
             
-            # Motor de Juros Compostos Puro Mês a Mês (CORREÇÃO DE TIPOGRAFIA: 'Patrimônio Base')
             for m in range(13):
                 meses_lista.append(f"Mês {m}")
                 patr_base_lista.append(saldo_total_atual)
@@ -494,12 +502,11 @@ if not st.session_state.df_base.empty:
                 
             df_proj_real = pd.DataFrame({
                 "Mês": meses_lista, 
-                "Patrimônio Base": patr_base_lista, # Tipografia corrigida
+                "Patrimônio Base": patr_base_lista,
                 "Aportes Acumulados": aportes_lista, 
                 "Juros + Divs. Reinvestidos": compostos_lista
             })
             
-            # Melt sem o erro de acentuação
             df_proj_real_melt = df_proj_real.melt(
                 id_vars=["Mês"], 
                 value_vars=["Patrimônio Base", "Aportes Acumulados", "Juros + Divs. Reinvestidos"], 
