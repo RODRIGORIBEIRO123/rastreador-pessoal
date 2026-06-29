@@ -492,11 +492,11 @@ if not st.session_state.df_base.empty:
                             st.dataframe(df_custom, use_container_width=True, hide_index=True)
 
         # ==========================================
-        # ABA 7: TERMINAL DE IA PARAMETRIZADO NATIVO (REDUNDÂNCIA DUPLA HTTP)
+        # ABA 7: TERMINAL DE IA PARAMETRIZADO NATIVO COM AUTO-DISCOVERY
         # ==========================================
         with tab7:
             st.markdown("### 🏢 Comitê de Alocação IA - Visão CNPI Sênior")
-            st.markdown("Insira sua chave de API corporativa para habilitar o processamento analítico profundo. O sistema possui contingência automática contra quedas regionais do Google.")
+            st.markdown("Insira sua chave de API corporativa para habilitar o processamento analítico profundo. O motor fará o rastreamento automático do modelo ideal para a sua credencial.")
             
             api_key = st.text_input("Chave API do Google Gemini (Opcional):", type="password")
             
@@ -528,27 +528,44 @@ if not st.session_state.df_base.empty:
                 """
                 
                 if api_key:
-                    payload = {"contents": [{"parts": [{"text": f"{sys_prompt}\n\nPergunta do Gestor: {prompt}"}]}]}
-                    headers = {"Content-Type": "application/json"}
-                    
                     try:
-                        # TENTATIVA 1: O modelo ultrarrápido 1.5 Flash na rota v1beta
-                        url_flash = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
-                        res = requests.post(url_flash, json=payload, headers=headers, timeout=15)
+                        # 1. MOTOR DE DESCOBERTA AUTOMÁTICA (AUTO-DISCOVERY DE MODELOS)
+                        url_models = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
+                        res_models = requests.get(url_models, timeout=10)
                         
-                        if res.status_code == 200:
-                            resposta = res.json()['contents'][0]['parts'][0]['text']
-                        else:
-                            # TENTATIVA 2 (FALLBACK SEGURO): O modelo clássico universal 1.0 Pro na rota raiz v1
-                            url_pro = f"https://generativelanguage.googleapis.com/v1/models/gemini-pro:generateContent?key={api_key}"
-                            res_fallback = requests.post(url_pro, json=payload, headers=headers, timeout=15)
+                        if res_models.status_code == 200:
+                            modelos_disponiveis = res_models.json().get('models', [])
+                            modelos_geracao = [m['name'] for m in modelos_disponiveis if 'generateContent' in m.get('supportedGenerationMethods', [])]
                             
-                            if res_fallback.status_code == 200:
-                                resposta = res_fallback.json()['contents'][0]['parts'][0]['text']
+                            # Filtra o melhor modelo Gemini disponível na lista da sua chave
+                            modelo_alvo = None
+                            for pref in ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-1.0-pro', 'gemini-pro']:
+                                for m_disp in modelos_geracao:
+                                    if pref in m_disp:
+                                        modelo_alvo = m_disp
+                                        break
+                                if modelo_alvo: break
+                                
+                            if not modelo_alvo and modelos_geracao:
+                                modelo_alvo = modelos_geracao[0] # Fallback extremo
+                                
+                            if modelo_alvo:
+                                # 2. REQUISIÇÃO DIRETA AO MODELO DESCOBERTO E COMPROVADO
+                                url_api = f"https://generativelanguage.googleapis.com/v1beta/{modelo_alvo}:generateContent?key={api_key}"
+                                payload = {"contents": [{"parts": [{"text": f"{sys_prompt}\n\nPergunta do Gestor: {prompt}"}]}]}
+                                headers = {"Content-Type": "application/json"}
+                                
+                                res_api = requests.post(url_api, json=payload, headers=headers, timeout=20)
+                                if res_api.status_code == 200:
+                                    resposta = res_api.json()['contents'][0]['parts'][0]['text']
+                                else:
+                                    resposta = f"⚠️ Erro ao gerar conteúdo (Status {res_api.status_code}): {res_api.text}"
                             else:
-                                resposta = f"⚠️ O Google recusou a conexão em ambas as rotas. Verifique sua chave. Erro final: {res_fallback.text}"
+                                resposta = "⚠️ Nenhum modelo de geração de texto (generateContent) encontrado para esta chave de API. Verifique as permissões no AI Studio."
+                        else:
+                            resposta = f"⚠️ Chave inválida ou bloqueada pelo Google. Erro de Autenticação: {res_models.text}"
                     except Exception as e:
-                        resposta = f"⚠️ Falha de comunicação de rede. Detalhe: {e}"
+                        resposta = f"⚠️ Falha na infraestrutura de rede. Detalhe: {e}"
                 else:
                     p_u = prompt.upper()
                     if "CONCENTRAÇÃO" in p_u or "PESO" in p_u or "RISCO" in p_u or "SETOR" in p_u:
