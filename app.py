@@ -28,7 +28,7 @@ if 'dados_mercado' not in st.session_state: st.session_state.dados_mercado = {}
 if 'df_simul' not in st.session_state: st.session_state.df_simul = pd.DataFrame()
 
 if 'historico_chat' not in st.session_state:
-    st.session_state.historico_chat = [{"role": "assistant", "content": "Saudações. Sou a sua analista sênior integrada. O terminal foi reestruturado para mapear seus ativos e os indicadores do Focus em tempo real. Insira sua chave API corporativa para habilitar a inteligência profunda."}]
+    st.session_state.historico_chat = [{"role": "assistant", "content": "Saudações. Sou a sua analista sênior integrada. O terminal está mapeado em tempo real com o Focus e a sua carteira. Pode fazer a sua pergunta."}]
 
 @st.cache_data(ttl=86400)
 def carregar_macro():
@@ -492,19 +492,28 @@ if not st.session_state.df_base.empty:
                             st.dataframe(df_custom, use_container_width=True, hide_index=True)
 
         # ==========================================
-        # ABA 7: TERMINAL DE IA PARAMETRIZADO COM IGNORÂNCIA DE TIMEOUT + DISPARO DIRETO
+        # ABA 7: TERMINAL DE IA COM INJEÇÃO DE SEGREDOS
         # ==========================================
         with tab7:
             st.markdown("### 🏢 Comitê de Alocação IA - Visão CNPI Sênior")
-            st.markdown("Insira sua chave de API corporativa para habilitar o processamento analítico profundo. Chamadas otimizadas via Direct REST HTTP com tolerância a falhas de rede.")
             
-            api_key = st.text_input("Chave API do Google Gemini (Opcional):", type="password")
+            api_key = ""
+            try:
+                # 1. TENTA LER A CHAVE INVISÍVEL DO STREAMLIT CLOUD
+                api_key = st.secrets["GEMINI_API_KEY"]
+                st.success("✅ Acesso Liberado: Chave API detetada no cofre seguro do servidor.")
+            except:
+                # 2. SE NÃO ESTIVER LÁ, MOSTRA O CAMPO MANUAL (FALLBACK)
+                st.warning("⚠️ Chave API não encontrada nos Segredos do Streamlit. Insira no campo abaixo para habilitar a IA.")
+                api_key_input = st.text_input("Chave API do Google Gemini:", type="password")
+                if api_key_input:
+                    api_key = api_key_input
             
             st.write("---")
             for msg in st.session_state.historico_chat:
                 with st.chat_message(msg["role"]): st.write(msg["content"])
                 
-            if prompt := st.chat_input("Ex: Baseado no Focus atual, quais FIIs eu devo reavaliar?"):
+            if prompt := st.chat_input("Ex: Com a Selic a 14%, devo aumentar minha margem de Graham exigida?"):
                 st.session_state.historico_chat.append({"role": "user", "content": prompt})
                 with st.chat_message("user"): st.write(prompt)
                 
@@ -523,51 +532,30 @@ if not st.session_state.df_base.empty:
                 {contexto_macro}
                 
                 [DIRETRIZES DE RESPOSTA]
-                - Não use linguagem de iniciante. Use termos técnicos apropriados.
+                - Não use linguagem de iniciante. Use termos técnicos apropriados (Duration, Risco Cauda, Assimetria).
                 - Cruze os dados para fornecer números exatos na sua resposta.
                 """
                 
-                sucesso_api = False
-                resposta = ""
-                
                 if api_key:
-                    # 🔥 DISPARO EM CASCATA COM TIMEOUT AGRESSIVO: Corta o gargalo antes do Streamlit travar
-                    rotas_tentativa = [
-                        "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent",
-                        "https://generativelanguage.googleapis.com/v1/models/gemini-pro:generateContent"
-                    ]
-                    
+                    # ROTA DIRETA E OTIMIZADA PARA O MODELO 1.5 FLASH (Sem auto-discovery para evitar timeout)
+                    url_api = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
                     payload = {"contents": [{"parts": [{"text": f"{sys_prompt}\n\nPergunta do Gestor: {prompt}"}]}]}
                     headers = {"Content-Type": "application/json"}
                     
-                    for url_base in rotas_tentativa:
-                        try:
-                            url_api = f"{url_base}?key={api_key}"
-                            # Limitamos o tempo de resposta a 6 segundos por tentativa
-                            res_api = requests.post(url_api, json=payload, headers=headers, timeout=6)
-                            
-                            if res_api.status_code == 200:
-                                resposta = res_api.json()['contents'][0]['parts'][0]['text']
-                                sucesso_api = True
-                                break
-                            elif res_api.status_code == 429:
-                                continue # Modelo sem cota, avança para a próxima rota
-                        except (requests.exceptions.Timeout, requests.exceptions.RequestException):
-                            continue # Intercepta o timeout e pula para o próximo modelo sem travar
-                            
-                # 🛡️ MOTOR DE REDUNDÂNCIA ABSOLUTA: Se a rede falhar ou a chave estiver sem cota, o local CNPI assume
-                if not sucesso_api:
-                    p_u = prompt.upper()
-                    if "CONCENTRAÇÃO" in p_u or "PESO" in p_u or "RISCO" in p_u or "SETOR" in p_u:
-                        maior_ativo = df_perf_final.sort_values('Saldo Atual', ascending=False).iloc[0]
-                        maior_setor = df_perf_final.groupby('Setor')['Saldo Atual'].sum().idxmax()
-                        peso_setor = (df_perf_final.groupby('Setor')['Saldo Atual'].sum().max() / df_perf_final['Saldo Atual'].sum()) * 100
-                        resposta = f"**[Diagnóstico Quantitativo Sênior - Modo Contingência]** O seu risco de cauda setorial concentra-se em **{maior_setor}** ({peso_setor:.2f}% do capital). Sob uma Selic projetada de {proj_focus.get(f'Selic_{ano_atual}', 14.0)}%, este nível de exposição exige monitorização estrita do custo de oportunidade."
-                    elif "BAZIN" in p_u or "TETO" in p_u or "COMPRA" in p_u:
-                        ativo_bazin = st.session_state.df_rec_bazin.sort_values('Margem Segurança', ascending=False).iloc[0]
-                        resposta = f"**[Auditoria de Valuation - Modo Contingência]** De acordo com a base histórica de dividendos, o ativo com maior assimetria positiva de preço (desconto tático) é **{ativo_bazin['Ativo']}**, apresentando Margem de Segurança de **{ativo_bazin['Margem Segurança']:.2f}%**."
-                    else:
-                        resposta = f"**[Aviso do Comitê de Alocação]** Identificámos uma instabilidade temporária na rede externa do Google ou latência elevada no servidor da nuvem (Timeout). Ativámos o motor local de governança. Para dúvidas complexas de mercado, aguarde alguns instantes e submeta o prompt novamente."
+                    try:
+                        # TIMEOUT ESTENDIDO PARA 25 SEGUNDOS (O Sênior precisa de tempo para analisar a carteira)
+                        res_api = requests.post(url_api, json=payload, headers=headers, timeout=25)
+                        
+                        if res_api.status_code == 200:
+                            resposta = res_api.json()['contents'][0]['parts'][0]['text']
+                        else:
+                            resposta = f"⚠️ Ocorreu uma falha na API do Google (Erro {res_api.status_code}). Detalhe técnico para depuração: {res_api.text}"
+                    except requests.exceptions.Timeout:
+                        resposta = "⚠️ Ocorreu um *Timeout*. O volume de dados da carteira fez a conexão com o Google ultrapassar o tempo limite de 25 segundos do servidor. Tente simplificar a pergunta ou tente novamente em instantes."
+                    except Exception as e:
+                        resposta = f"⚠️ Falha estrutural de rede. Detalhe: {e}"
+                else:
+                    resposta = "⚠️ Operação bloqueada. Sem a chave da API do Gemini, o módulo de inteligência não pode ser executado. Insira a chave no painel de Segredos do Streamlit Cloud."
                 
                 st.session_state.historico_chat.append({"role": "assistant", "content": resposta})
                 st.rerun()
