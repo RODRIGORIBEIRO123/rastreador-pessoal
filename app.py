@@ -6,14 +6,15 @@ from bcb import sgs
 import re
 import io
 import requests
-from openpyxl.chart import BarChart, Reference
 import plotly.express as px
 
 # ==========================================
 # 1. CONFIGURAÇÃO, MEMÓRIA E DICIONÁRIOS
 # ==========================================
 st.set_page_config(page_title="Terminal de Gestão CNPI", layout="wide")
-st.title("📊 Terminal de Gestão Profissional")
+
+data_hoje = pd.Timestamp.now().strftime('%d/%m/%Y')
+st.title(f"📊 Terminal de Gestão Profissional - {data_hoje}")
 
 MAPEAMENTO_TICKERS = {
     "GALG11": "GARE11", "SOMA3": "ALOS3", "ARZZ3": "ALOS3", 
@@ -28,8 +29,11 @@ if 'dados_mercado' not in st.session_state: st.session_state.dados_mercado = {}
 if 'df_simul' not in st.session_state: st.session_state.df_simul = pd.DataFrame()
 
 if 'historico_chat' not in st.session_state:
-    st.session_state.historico_chat = [{"role": "assistant", "content": "Saudações. Sou a sua analista sênior integrada. O terminal está mapeado em tempo real com o Focus (Curva de 3 anos) e a sua carteira. Pode fazer a sua pergunta."}]
+    st.session_state.historico_chat = [{"role": "assistant", "content": "Saudações. O terminal está mapeado em tempo real. Pode fazer a sua pergunta sobre o cenário macroeconômico ou a sua carteira."}]
 
+# ==========================================
+# 2. FUNÇÕES MACRO E DADOS
+# ==========================================
 @st.cache_data(ttl=86400)
 def carregar_macro():
     try:
@@ -42,7 +46,7 @@ def carregar_macro():
 def obter_fundamentos_brasil():
     try:
         url = 'https://www.fundamentus.com.br/resultado.php'
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
         res = requests.get(url, headers=headers, timeout=10)
         df = pd.read_html(io.StringIO(res.text), decimal=',', thousands='.')[0]
         fundamentos = {}
@@ -56,39 +60,30 @@ def obter_fundamentos_brasil():
         return fundamentos
     except: return {}
 
-# TAXA SPOT: Captura a Selic oficial e IPCA 12m atuais
 @st.cache_data(ttl=86400)
 def obter_macro_atual():
-    selic_atual = 10.50
-    ipca_12m = 4.00
+    selic_atual, ipca_12m = 10.50, 4.00
     try:
         res = requests.get("https://brasilapi.com.br/api/taxas/v1", timeout=5)
         if res.status_code == 200:
             for taxa in res.json():
                 if taxa['nome'] == 'Selic': selic_atual = float(taxa['valor'])
     except: pass
-    
     try:
-        # A série 13522 do BCB representa o IPCA acumulado em 12 meses
         ipca_df = sgs.get({'IPCA_12M': 13522}, last=1)
-        if not ipca_df.empty:
-            ipca_12m = float(ipca_df['IPCA_12M'].iloc[-1])
+        if not ipca_df.empty: ipca_12m = float(ipca_df['IPCA_12M'].iloc[-1])
     except: pass
-    
     return selic_atual, ipca_12m
 
-# PROJEÇÕES DE 3 ANOS (FOCUS)
 @st.cache_data(ttl=86400)
 def obter_projecoes_focus():
     ano_atual = pd.Timestamp.now().year
-    selic_atual, ipca_atual = obter_macro_atual()
-    
+    selic_atual, _ = obter_macro_atual()
     fallback = {
         f"IPCA_{ano_atual}": 3.80, f"Selic_{ano_atual}": selic_atual, 
         f"IPCA_{ano_atual+1}": 3.70, f"Selic_{ano_atual+1}": selic_atual - 1.0,
         f"IPCA_{ano_atual+2}": 3.50, f"Selic_{ano_atual+2}": selic_atual - 1.5
     }
-    
     try:
         url = "https://olinda.bcb.gov.br/olinda/servico/Expectativas/versao/v1/odata/ExpectativasMercadoAnuais?$top=300&$filter=Indicador%20eq%20'IPCA'%20or%20Indicador%20eq%20'Selic'&$orderby=Data%20desc&$format=json"
         res = requests.get(url, timeout=8).json()
@@ -96,15 +91,11 @@ def obter_projecoes_focus():
             df = pd.DataFrame(res['value'])
             data_recente = df['Data'].max()
             df = df[df['Data'] == data_recente]
-            
             for ano_offset in [0, 1, 2]:
                 ano_alvo = str(ano_atual + ano_offset)
                 df_ano = df[df['DataReferencia'] == ano_alvo]
-                
-                if not df_ano[df_ano['Indicador'] == 'IPCA'].empty: 
-                    fallback[f"IPCA_{ano_alvo}"] = float(df_ano[df_ano['Indicador'] == 'IPCA']['Mediana'].values[0])
-                if not df_ano[df_ano['Indicador'] == 'Selic'].empty: 
-                    fallback[f"Selic_{ano_alvo}"] = float(df_ano[df_ano['Indicador'] == 'Selic']['Mediana'].values[0])
+                if not df_ano[df_ano['Indicador'] == 'IPCA'].empty: fallback[f"IPCA_{ano_alvo}"] = float(df_ano[df_ano['Indicador'] == 'IPCA']['Mediana'].values[0])
+                if not df_ano[df_ano['Indicador'] == 'Selic'].empty: fallback[f"Selic_{ano_alvo}"] = float(df_ano[df_ano['Indicador'] == 'Selic']['Mediana'].values[0])
         return fallback, ano_atual
     except: 
         return fallback, ano_atual
@@ -151,7 +142,6 @@ def consolidar_carteira(df):
     if df.empty: return df
     df['Ativo'] = df['Ativo'].astype(str).str.strip().str.upper()
     df['Ativo'] = df['Ativo'].apply(lambda x: MAPEAMENTO_TICKERS.get(x, x))
-    
     linhas = []
     for ativo, group in df.groupby('Ativo'):
         qtd = float(group['Quantidade'].sum())
@@ -167,20 +157,12 @@ def ler_arquivo_universal(arquivo_upload):
     texto = arquivo_upload.getvalue().decode('utf-8-sig', errors='ignore') if arquivo_upload.name.endswith('.csv') else None
     return pd.read_csv(io.StringIO(texto), sep=';' if ';' in texto.split('\n')[0] else ',') if texto else pd.read_excel(arquivo_upload)
 
-def gerar_excel_premium(df_perf, df_val):
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        df_perf.fillna(0).to_excel(writer, sheet_name='Rentabilidade', index=False)
-        df_val.fillna(0).to_excel(writer, sheet_name='Valuation', index=False)
-    return output.getvalue()
-
 def processar_planilha_b3(df):
     if df.empty: return pd.DataFrame()
     df['Data do Negócio'] = pd.to_datetime(df['Data do Negócio'], dayfirst=True, errors='coerce')
     df['Quantidade'] = df['Quantidade'].apply(limpar_numero)
     df['Valor'] = df['Valor'].apply(limpar_numero)
     df = df.sort_values('Data do Negócio')
-    
     posicoes = {}
     for _, row in df.iterrows():
         if pd.isna(row['Código de Negociação']): continue
@@ -212,10 +194,10 @@ def processar_planilha_b3(df):
     return consolidar_carteira(pd.DataFrame(ativos_limpos))
 
 # ==========================================
-# 2. SISTEMA DE UPLOAD COM BOTÃO EXPLÍCITO
+# 3. SISTEMA DE UPLOAD (OPCIONAL)
 # ==========================================
 st.sidebar.header("1. Upload de Arquivos")
-arquivo_principal = st.sidebar.file_uploader("1️⃣ Planilha Principal (B3 ou Backup)", type=["xlsx", "csv"])
+arquivo_principal = st.sidebar.file_uploader("1️⃣ Planilha Principal (Opcional)", type=["xlsx", "csv"])
 arquivo_novo = st.sidebar.file_uploader("2️⃣ Novas Negociações B3 (Opcional)", type=["xlsx", "csv"])
 
 data_corte = None
@@ -248,7 +230,29 @@ if st.sidebar.button("🚀 Carregar e Rodar Aplicativo", use_container_width=Tru
             st.rerun()
 
 # ==========================================
-# 3. INTERFACE DE CONTROLE
+# 4. PAINEL MACRO (SEMPRE VISÍVEL)
+# ==========================================
+proj_focus, ano_atual = obter_projecoes_focus()
+selic_hoje, ipca_12m_hoje = obter_macro_atual()
+
+st.markdown("### 🇧🇷 Conjuntura Macroeconômica")
+
+c_mac1, c_mac2 = st.columns([1, 2])
+c_mac1.success(f"🎯 **Cenário Atual (Vigente)**\n\nSelic Atual: **{selic_hoje:.2f}% a.a.**\n\nIPCA 12 meses: **{ipca_12m_hoje:.2f}%**")
+c_mac2.info(
+    f"🔮 **Projeções do Mercado (Focus)**\n\n"
+    f"**Selic:** {ano_atual}: **{proj_focus.get(f'Selic_{ano_atual}', 0):.2f}%**  |  "
+    f"{ano_atual+1}: **{proj_focus.get(f'Selic_{ano_atual+1}', 0):.2f}%**  |  "
+    f"{ano_atual+2}: **{proj_focus.get(f'Selic_{ano_atual+2}', 0):.2f}%**\n\n"
+    f"**IPCA:** {ano_atual}: **{proj_focus.get(f'IPCA_{ano_atual}', 0):.2f}%**  |  "
+    f"{ano_atual+1}: **{proj_focus.get(f'IPCA_{ano_atual+1}', 0):.2f}%**  |  "
+    f"{ano_atual+2}: **{proj_focus.get(f'IPCA_{ano_atual+2}', 0):.2f}%**"
+)
+
+st.write("---")
+
+# ==========================================
+# 5. CONTROLE DE CARTEIRA (SE HOUVER)
 # ==========================================
 if not st.session_state.df_base.empty:
     st.markdown("### 2. Controle do Banco de Dados")
@@ -311,7 +315,7 @@ if not st.session_state.df_base.empty:
         st.success("Conexão Estabelecida com Sucesso!")
 
 # ==========================================
-# 4. PAINEL DE RELATÓRIOS E DASHBOARD
+# 6. DASHBOARD, ABAS E PROVENTOS
 # ==========================================
     if st.session_state.dados_mercado:
         linhas_perf = []
@@ -330,35 +334,29 @@ if not st.session_state.df_base.empty:
             })
         df_perf_final = pd.DataFrame(linhas_perf)
 
-        st.write("---")
         st.markdown("### 🏆 Visão Global do Portfólio")
-        data_mais_antiga = st.session_state.df_base['Data Média'].min()
-        data_formatada = data_mais_antiga.strftime('%d/%m/%Y') if pd.notna(data_mais_antiga) else "Início"
-        st.caption(f"🗓️ **Período de Análise Base:** Desde {data_formatada} até Hoje.")
-
         df_acoes = df_perf_final[df_perf_final['Tipo'] == 'Ação']
         df_fiis = df_perf_final[df_perf_final['Tipo'] == 'FII']
         evolucao_acoes = (df_acoes['Saldo Atual'].sum() / df_acoes['Total Investido'].sum() - 1) * 100 if df_acoes['Total Investido'].sum() > 0 else 0
         evolucao_fiis = (df_fiis['Saldo Atual'].sum() / df_fiis['Total Investido'].sum() - 1) * 100 if df_fiis['Total Investido'].sum() > 0 else 0
-        tooltip_msg = f"Período considerado: Desde {data_formatada} até Hoje."
 
         m1, m2, m3, m4 = st.columns(4)
-        m1.metric("📈 Patrimônio (Ações)", f"R$ {df_acoes['Saldo Atual'].sum():,.2f}", f"{evolucao_acoes:.2f}% (R$ {df_acoes['Resultado (R$)'].sum():,.2f})", help=tooltip_msg)
-        m2.metric("🏢 Patrimônio (FIIs)", f"R$ {df_fiis['Saldo Atual'].sum():,.2f}", f"{evolucao_fiis:.2f}% (R$ {df_fiis['Resultado (R$)'].sum():,.2f})", help=tooltip_msg)
-        m3.metric("💸 Renda Acumulada (Ações)", f"R$ {df_acoes['Total Div. (R$)'].sum():,.2f}", help=tooltip_msg)
-        m4.metric("💸 Renda Acumulada (FIIs)", f"R$ {df_fiis['Total Div. (R$)'].sum():,.2f}", help=tooltip_msg)
+        m1.metric("📈 Patrimônio (Ações)", f"R$ {df_acoes['Saldo Atual'].sum():,.2f}", f"{evolucao_acoes:.2f}%")
+        m2.metric("🏢 Patrimônio (FIIs)", f"R$ {df_fiis['Saldo Atual'].sum():,.2f}", f"{evolucao_fiis:.2f}%")
+        m3.metric("💸 Renda Acumulada (Ações)", f"R$ {df_acoes['Total Div. (R$)'].sum():,.2f}")
+        m4.metric("💸 Renda Acumulada (FIIs)", f"R$ {df_fiis['Total Div. (R$)'].sum():,.2f}")
 
-        tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
-            "📊 Visão Geral", "💰 Bazin (Renda)", "🏢 Graham (Valor)", 
-            "⚖️ Pesos e Setores", "🎯 Recomendações e Projeções", "📈 Gráficos Interativos", "💬 Assistente IA"
+        tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+            "📊 Visão Geral", "💰 Valuation (Bazin & Graham)", "⚖️ Pesos e Setores", "📈 Gráficos", "💸 Proventos (Mês Atual)", "💬 IA & Recomendações"
         ])
         
         with tab1:
             st.dataframe(df_perf_final.drop(columns=['Tipo', 'Setor']), use_container_width=True, hide_index=True)
 
         with tab2:
+            st.markdown("#### 1. Método Bazin (Foco em Renda)")
             yield_desejado = st.number_input("Taxa de Risco Exigida (%):", value=6.0, step=0.5) / 100.0
-            df_bazin_view = st.session_state.df_simul[["Ativo", "Cotação Atual", "Div. Proj. (R$)"] if "Div. Proj. (R$)" in st.session_state.df_simul.columns else ["Ativo", "Cotação Atual", "Div. Projetado (R$)"]].copy()
+            df_bazin_view = st.session_state.df_simul[["Ativo", "Cotação Atual", "Div. Projetado (R$)"]].copy()
             df_bazin_editado = st.data_editor(df_bazin_view, use_container_width=True, hide_index=True, disabled=["Ativo", "Cotação Atual"], key="edit_bazin")
             st.session_state.df_simul["Div. Projetado (R$)"] = df_bazin_editado.iloc[:, 2]
             
@@ -369,8 +367,8 @@ if not st.session_state.df_base.empty:
                 linhas_bazin.append({"Ativo": row['Ativo'], "Preço Teto (Bazin)": bazin, "Margem Segurança": margem_b})
             st.session_state.df_rec_bazin = pd.DataFrame(linhas_bazin)
             st.dataframe(st.session_state.df_rec_bazin, use_container_width=True, hide_index=True)
-
-        with tab3:
+            
+            st.markdown("#### 2. Método Graham (Foco em Valor)")
             df_graham_view = st.session_state.df_simul[["Ativo", "Cotação Atual", "VPA (Contábil)", "LPA Projetado"]].copy()
             df_graham_editado = st.data_editor(df_graham_view, use_container_width=True, hide_index=True, disabled=["Ativo", "Cotação Atual"], key="edit_graham")
             st.session_state.df_simul["VPA (Contábil)"] = df_graham_editado["VPA (Contábil)"]
@@ -384,110 +382,13 @@ if not st.session_state.df_base.empty:
             st.session_state.df_rec_graham = pd.DataFrame(linhas_graham)
             st.dataframe(st.session_state.df_rec_graham, use_container_width=True, hide_index=True)
 
-        with tab4:
+        with tab3:
             c_g1, c_g2, c_g3 = st.columns(3)
             c_g1.plotly_chart(px.pie(df_perf_final, values='Saldo Atual', names='Tipo', hole=0.4, title="Por Tipo"), use_container_width=True)
             c_g2.plotly_chart(px.pie(df_perf_final, values='Saldo Atual', names='Ativo', title="Por Ativo"), use_container_width=True)
-            c_g3.plotly_chart(px.pie(df_perf_final, values='Saldo Atual', names='Setor', title="Por Classe/Setor"), use_container_width=True)
-            
-            def gerar_tabela_peso(coluna):
-                df_peso = df_perf_final.groupby(coluna)['Saldo Atual'].sum().reset_index()
-                df_peso['Peso (%)'] = (df_peso['Saldo Atual'] / df_peso['Saldo Atual'].sum()) * 100
-                return df_peso.sort_values('Peso (%)', ascending=False)
-            c_t1, c_t2, c_t3 = st.columns(3)
-            with c_t1: st.dataframe(gerar_tabela_peso('Tipo'), use_container_width=True, hide_index=True)
-            with c_t2: st.dataframe(gerar_tabela_peso('Ativo'), use_container_width=True, hide_index=True)
-            with c_t3: st.dataframe(gerar_tabela_peso('Setor'), use_container_width=True, hide_index=True)
+            c_g3.plotly_chart(px.pie(df_perf_final, values='Saldo Atual', names='Setor', title="Por Setor"), use_container_width=True)
 
-        with tab5:
-            proj_focus, ano_atual = obter_projecoes_focus()
-            selic_hoje, ipca_12m_hoje = obter_macro_atual()
-            
-            st.markdown(f"### 🇧🇷 Conjuntura Macroeconômica")
-            
-            # Painéis Visuais: Layout Assíncrono com Peso (1 para Atual, 2 para Projeções)
-            c_mac1, c_mac2 = st.columns([1, 2])
-            
-            c_mac1.success(f"🎯 **Cenário Atual (Vigente)**\n\nSelic Atual: **{selic_hoje:.2f}% a.a.**\n\nIPCA 12 meses: **{ipca_12m_hoje:.2f}%**")
-            
-            c_mac2.info(
-                f"🔮 **Projeções do Mercado (Focus)**\n\n"
-                f"**Selic Projetada:** {ano_atual}: **{proj_focus.get(f'Selic_{ano_atual}', 0):.2f}%**  |  "
-                f"{ano_atual+1}: **{proj_focus.get(f'Selic_{ano_atual+1}', 0):.2f}%**  |  "
-                f"{ano_atual+2}: **{proj_focus.get(f'Selic_{ano_atual+2}', 0):.2f}%**\n\n"
-                f"**IPCA Projetado:** {ano_atual}: **{proj_focus.get(f'IPCA_{ano_atual}', 0):.2f}%**  |  "
-                f"{ano_atual+1}: **{proj_focus.get(f'IPCA_{ano_atual+1}', 0):.2f}%**  |  "
-                f"{ano_atual+2}: **{proj_focus.get(f'IPCA_{ano_atual+2}', 0):.2f}%**"
-            )
-            
-            st.write("---")
-            st.markdown("### 🤖 Radar de Oportunidades do Especialista")
-            
-            c_p1, c_p2, c_p3, c_p4 = st.columns(4)
-            patrimonio_fora = c_p1.number_input("Patrimônio Fora da Bolsa (R$):", value=0.0, step=10000.0)
-            aporte_mensal_planejado = c_p2.number_input("Aporte Mensal (R$):", value=2000.0, step=500.0)
-            rentabilidade_ganho = c_p3.number_input("Rentab. Mensal Estimada (%):", value=0.8, step=0.1) / 100.0
-            cresc_dividendos_anual = c_p4.number_input("Crescimento Anual de Dividendos (%):", value=5.0, step=1.0) / 100.0
-
-            df_recs = pd.merge(df_perf_final[['Ativo', 'Tipo']], st.session_state.df_rec_bazin[['Ativo', 'Margem Segurança']], on='Ativo', how='left').rename(columns={'Margem Segurança': 'Margem Bazin (%)'})
-            df_recs = pd.merge(df_recs, st.session_state.df_rec_graham[['Ativo', 'Margem Segurança']], on='Ativo', how='left').rename(columns={'Margem Segurança': 'Margem Graham (%)'})
-            
-            st.markdown("##### ⚖️ Parametrização Exigida do Prêmio de Risco")
-            c_m1, c_m2 = st.columns(2)
-            margem_graham_exigida = c_m1.number_input("Margem de Segurança Mínima de Graham (Ações %):", value=15.0, step=1.0)
-            margem_bazin_exigida = c_m2.number_input("Margem de Segurança Mínima de Bazin (FIIs/Renda %):", value=5.0, step=1.0)
-
-            recomendacoes = []
-            for _, r in df_recs.iterrows():
-                if r['Tipo'] == 'Ação':
-                    if r['Margem Graham (%)'] > margem_graham_exigida and r['Margem Bazin (%)'] > margem_bazin_exigida: recomendacoes.append("COMPRA FORTE 🟢")
-                    elif r['Margem Graham (%)'] > 0 or r['Margem Bazin (%)'] > 0: recomendacoes.append("MANTER / COMPRA 🟡")
-                    else: recomendacoes.append("AVALIAR VENDA 🔴")
-                else: 
-                    if r['Margem Bazin (%)'] > margem_bazin_exigida: recomendacoes.append("COMPRA FORTE 🟢")
-                    elif r['Margem Bazin (%)'] > -5: recomendacoes.append("MANTER 🟡")
-                    else: recomendacoes.append("AVALIAR VENDA 🔴")
-            df_recs['Status Recomendações'] = recomendacoes
-            
-            st.dataframe(df_recs, use_container_width=True, hide_index=True, column_config={
-                "Status Recomendações": st.column_config.TextColumn("Status Recomendações ❓", help=f"COMPRA FORTE 🟢: Desconto patrimonial Graham > {margem_graham_exigida}% E Margem Bazin > {margem_bazin_exigida}%.\nMANTER 🟡: Margem equilibrada.\nAVALIAR VENDA 🔴: Ativo caro e dividendos abaixo da taxa exigida.")
-            })
-
-            st.divider()
-            st.markdown("### ❄️ Projeção Bola de Neve Completa (Juros Compostos Reais)")
-            
-            saldo_total_atual = df_perf_final['Saldo Atual'].sum() + patrimonio_fora
-            div_total_12m = st.session_state.df_simul['Div. Projetado (R$)'].sum()
-            base_div_mensal = div_total_12m / 12 if div_total_12m > 0 else 0
-            
-            meses_lista, patr_base_lista, aportes_lista, compostos_lista = [], [], [], []
-            saldo_corrente, acum_aportes, acum_juros_divs = saldo_total_atual, 0.0, 0.0
-            
-            for m in range(13):
-                meses_lista.append(f"Mês {m}")
-                patr_base_lista.append(saldo_total_atual)
-                aportes_lista.append(acum_aportes)
-                compostos_lista.append(acum_juros_divs)
-                
-                ganho_capital = saldo_corrente * rentabilidade_ganho
-                fator_cresc_mensal = (1 + cresc_dividendos_anual) ** (m / 12)
-                dividendo_mes = base_div_mensal * fator_cresc_mensal
-                
-                acum_juros_divs += (ganho_capital + dividendo_mes)
-                acum_aportes += aporte_mensal_planejado
-                saldo_corrente += (ganho_capital + dividendo_mes + aporte_mensal_planejado)
-                
-            df_proj_real = pd.DataFrame({"Mês": meses_lista, "Patrimônio Base": patr_base_lista, "Aportes Acumulados": aportes_lista, "Juros + Divs. Reinvestidos": compostos_lista})
-            df_proj_real_melt = df_proj_real.melt(id_vars=["Mês"], value_vars=["Patrimônio Base", "Aportes Acumulados", "Juros + Divs. Reinvestidos"], var_name="Componente", value_name="Valor")
-            
-            fig_proj = px.area(df_proj_real_melt, x="Mês", y="Valor", color="Componente", title="Evolução Patrimonial Composta (Ganho de Capital + Dividendos)", color_discrete_sequence=["#34495e", "#2980b9", "#27ae60"])
-            fig_proj.update_traces(hovertemplate='%{x}<br>%{data.name}: R$ %{y:,.2f}<extra></extra>')
-            fig_proj.update_layout(xaxis_title="Linha do Tempo", yaxis_title="Montante Projetado (R$)", margin=dict(t=40))
-            fig_proj.update_yaxes(range=[saldo_total_atual * 0.98, saldo_corrente * 1.02])
-            st.plotly_chart(fig_proj, use_container_width=True)
-
-        with tab6:
-            st.markdown("### 1. Performance Global (Individualizada por Ativo)")
+        with tab4:
             todos_ativos = df_perf_final['Ativo'].tolist()
             c_sel, c_ind = st.columns([2, 1])
             with c_sel: ativos_selecionados = st.multiselect("Selecione os ativos:", todos_ativos, default=todos_ativos[:6], key="ms_g")
@@ -497,124 +398,120 @@ if not st.session_state.df_base.empty:
                 df_grafico = df_perf_final[df_perf_final['Ativo'].isin(ativos_selecionados)].copy()
                 df_grafico['Período'] = df_grafico['Data Média'].astype(str) + " até Hoje"
                 df_melt = df_grafico.melt(id_vars=["Ativo", "Período"], value_vars=ind_selecionados, var_name="Indicador", value_name="Rentabilidade")
-                
-                titulo_graf1 = f"Performance Desde: {df_grafico.iloc[0]['Data Média']} até Hoje" if len(ativos_selecionados) == 1 else "Performance Baseada nas Datas Médias de Cada Ativo"
-                fig1 = px.bar(df_melt, x="Ativo", y="Rentabilidade", color="Indicador", barmode="group", hover_data=["Período"], title=titulo_graf1)
-                fig1.update_traces(hovertemplate='<b>%{x}</b> (%{data.name})<br>Período: %{customdata[0]}<br>Rentabilidade: %{y:.2f}%<extra></extra>')
+                fig1 = px.bar(df_melt, x="Ativo", y="Rentabilidade", color="Indicador", barmode="group")
                 fig1.update_layout(yaxis_ticksuffix=" %", margin=dict(t=40))
                 st.plotly_chart(fig1, use_container_width=True)
-                st.dataframe(df_grafico[['Ativo', 'Período', 'Evolução c/ Div', 'CDI Acum.', 'IPCA Acum.']], use_container_width=True, hide_index=True)
 
-            st.divider()
-            st.markdown("### 2. Análise de Período Específico (Janela Tática)")
-            c_dt1, c_dt2, c_btn = st.columns([1, 1, 1])
-            with c_dt1: dt_inicio_custom = st.date_input("Data de Início", pd.Timestamp.now().date() - pd.DateOffset(years=1))
-            with c_dt2: dt_fim_custom = st.date_input("Data de Fim", pd.Timestamp.now().date())
-            with c_btn: ind_custom = st.multiselect("Indicadores:", ["Retorno Total (%)", "CDI Período", "IPCA Período"], default=["Retorno Total (%)", "CDI Período", "IPCA Período"], key="ind_custom")
+        with tab5:
+            st.markdown("### 💸 Relatório de Proventos (Mês Atual)")
+            mes_atual = pd.Timestamp.now().month
+            ano_atual_data = pd.Timestamp.now().year
             
-            if st.button("Gerar Análise do Período", use_container_width=True):
-                if not ativos_selecionados: st.warning("Selecione os ativos na caixa acima.")
-                else:
-                    with st.spinner("Conectando à bolsa para o período específico..."):
-                        linhas_custom = []
-                        df_macro = carregar_macro()
-                        dt_fim_yf = dt_fim_custom + pd.Timedelta(days=1)
-                        for t in ativos_selecionados:
-                            try:
-                                acao = yf.Ticker(f"{t}.SA")
-                                hist = acao.history(start=dt_inicio_custom.strftime('%Y-%m-%d'), end=dt_fim_yf.strftime('%Y-%m-%d'))
-                                if not hist.empty:
-                                    preco_ini, preco_fim = float(hist['Close'].iloc[0]), float(hist['Close'].iloc[-1])
-                                    divs = acao.dividends
-                                    divs_periodo = float(divs[(divs.index.tz_localize(None) >= pd.to_datetime(dt_inicio_custom)) & (divs.index.tz_localize(None) <= pd.to_datetime(dt_fim_custom))].sum())
-                                    evolucao_custom = (((preco_fim + divs_periodo) / preco_ini) - 1) * 100
-                                    cdi_custom, ipca_custom = calcular_macro_acumulado(df_macro, pd.to_datetime(dt_inicio_custom), pd.to_datetime(dt_fim_custom))
-                                    linhas_custom.append({"Ativo": t, "Retorno Total (%)": evolucao_custom, "CDI Período": cdi_custom, "IPCA Período": ipca_custom})
-                            except: pass
-                        if linhas_custom:
-                            df_custom = pd.DataFrame(linhas_custom)
-                            df_custom['Período'] = f"{dt_inicio_custom.strftime('%d/%m/%Y')} a {dt_fim_custom.strftime('%d/%m/%Y')}"
-                            df_custom_melt = df_custom.melt(id_vars=["Ativo", "Período"], value_vars=ind_custom, var_name="Indicador", value_name="Rentabilidade")
-                            fig_custom = px.bar(df_custom_melt, x="Ativo", y="Rentabilidade", color="Indicador", barmode="group", hover_data=["Período"], title=f"Performance no Período: {dt_inicio_custom.strftime('%d/%m/%Y')} a {dt_fim_custom.strftime('%d/%m/%Y')}")
-                            fig_custom.update_traces(hovertemplate='<b>%{x}</b> (%{data.name})<br>Período: %{customdata[0]}<br>Rentabilidade: %{y:.2f}%<extra></extra>')
-                            fig_custom.update_layout(yaxis_ticksuffix=" %", margin=dict(t=40))
-                            st.plotly_chart(fig_custom, use_container_width=True)
-                            st.dataframe(df_custom, use_container_width=True, hide_index=True)
-
-        # ==========================================
-        # ABA 7: TERMINAL DE IA COM LOG DE DEPURAÇÃO E AUTO-DISCOVERY
-        # ==========================================
-        with tab7:
-            st.markdown("### 🏢 Comitê de Alocação IA - Visão CNPI Sênior")
-            
-            api_key = ""
-            try:
-                api_key = st.secrets["GEMINI_API_KEY"]
-                st.success("✅ Acesso Liberado: Chave API detetada no cofre seguro.")
-            except:
-                st.warning("⚠️ Chave API não encontrada nos Segredos do Streamlit. Insira no campo abaixo para habilitar a IA.")
-                api_key_input = st.text_input("Chave API do Google Gemini:", type="password")
-                if api_key_input: api_key = api_key_input
-            
-            st.write("---")
-            for msg in st.session_state.historico_chat:
-                with st.chat_message(msg["role"]): st.write(msg["content"])
-                
-            if prompt := st.chat_input("Ex: Com a Selic a 10.50%, devo aumentar minha margem de Graham exigida?"):
-                st.session_state.historico_chat.append({"role": "user", "content": prompt})
-                with st.chat_message("user"): st.write(prompt)
-                
-                contexto_carteira = df_perf_final[['Ativo', 'Qtd', 'Preço Médio', 'Preço Atual', 'Total Investido', 'Saldo Atual', 'Resultado (R$)', 'Total Div. (R$)', 'Evolução c/ Div']].to_csv(index=False, sep='|')
-                contexto_macro = (f"CENÁRIO MACROECONÔMICO (HOJE E CURVA FORWARD 3 ANOS):\n"
-                                  f"Selic Vigente Hoje: {selic_hoje:.2f}% | IPCA Acum. 12 meses: {ipca_12m_hoje:.2f}%\n"
-                                  f"Projeções Selic Fim de Ano: {ano_atual}: {proj_focus.get(f'Selic_{ano_atual}')}% | {ano_atual+1}: {proj_focus.get(f'Selic_{ano_atual+1}')}% | {ano_atual+2}: {proj_focus.get(f'Selic_{ano_atual+2}')}%\n"
-                                  f"Projeções IPCA Fim de Ano: {ano_atual}: {proj_focus.get(f'IPCA_{ano_atual}')}% | {ano_atual+1}: {proj_focus.get(f'IPCA_{ano_atual+1}')}% | {ano_atual+2}: {proj_focus.get(f'IPCA_{ano_atual+2}')}%")
-                
-                sys_prompt = f"""
-                Você é uma Analista de Investimentos Sênior (CNPI) e Gestora de Portfólio.
-                Sua linguagem é corporativa, executiva, fria, baseada em dados e voltada a relatórios de alta governança.
-                Você tem acesso irrestrito ao banco de dados da carteira do usuário e à curva macroeconômica completa (Spot e Forward 3 Anos).
-                
-                [MATRIZ DE DADOS EM TEMPO REAL]
-                {contexto_carteira}
-                
-                [{contexto_macro}]
-                
-                [DIRETRIZES DE RESPOSTA]
-                - Não use linguagem de iniciante. Use termos técnicos apropriados (Duration, Risco Cauda, Assimetria, Yield Curve).
-                - Cruze os dados da carteira com as projeções longas de Selic/IPCA para fornecer números exatos na sua resposta.
-                """
-                
-                if api_key:
-                    try:
-                        import google.generativeai as genai
-                        genai.configure(api_key=api_key)
-                        
-                        modelos_para_tentar = ['gemini-3.5-flash', 'gemini-3.1-flash-lite', 'gemini-2.5-flash']
-                        resposta_sucesso = False
-                        erros_tecnicos = []
-                        
-                        for nome_modelo in modelos_para_tentar:
-                            try:
-                                model = genai.GenerativeModel(nome_modelo)
-                                response = model.generate_content([sys_prompt, prompt])
-                                resposta = response.text
-                                resposta_sucesso = True
-                                break 
-                            except Exception as e:
-                                erros_tecnicos.append(f"Motor {nome_modelo}: {str(e)}")
-                                continue
-                                    
-                        if not resposta_sucesso:
-                            erro_formatado = "\n".join(erros_tecnicos)
-                            resposta = f"⚠️ **Diagnóstico de Rede Sênior:** Falha de comunicação. Nenhum dos motores atualizados respondeu. Verifique se o Streamlit Cloud tem permissões de rede de saída ou valide as quotas no AI Studio.\n\n**Logs Técnicos:**\n`{erro_formatado}`"
+            if st.button("🔄 Calcular Proventos deste Mês", use_container_width=True):
+                with st.spinner("Conectando ao histórico de pagamentos..."):
+                    linhas_div = []
+                    for t, dm in st.session_state.dados_mercado.items():
+                        try:
+                            acao = yf.Ticker(f"{t}.SA")
+                            divs = acao.dividends
+                            # Filtra rigorosamente o mês e ano corrente
+                            divs_mes = divs[(divs.index.month == mes_atual) & (divs.index.year == ano_atual_data)].sum()
                             
-                    except ImportError:
-                        resposta = "⚠️ **AÇÃO NECESSÁRIA:** A biblioteca do Google não foi carregada. Vá ao painel do Streamlit Cloud, clique nos 3 pontinhos (⋮) no menu superior direito e escolha 'Reboot app'."
-                    except Exception as e:
-                        resposta = f"⚠️ Erro estrutural grave. Detalhe: {str(e)}"
-                else:
-                    resposta = "⚠️ Operação bloqueada. Sem a chave da API do Gemini, o módulo de inteligência não pode ser executado. Insira a chave no painel de Segredos do Streamlit Cloud."
-                
-                st.session_state.historico_chat.append({"role": "assistant", "content": resposta})
-                st.rerun()
+                            if divs_mes > 0:
+                                yoc = ((divs_mes * dm['Qtd']) / (dm['Qtd'] * dm['PM'])) * 100 if dm['PM'] > 0 else 0
+                                dy_spot = (divs_mes / dm['Preço Atual']) * 100 if dm['Preço Atual'] > 0 else 0
+                                
+                                linhas_div.append({
+                                    "Ativo": t, 
+                                    "Provento Unit. (R$)": divs_mes,
+                                    "Qtd Detida": int(dm['Qtd']),
+                                    "Total Recebido (R$)": divs_mes * dm['Qtd'],
+                                    "Yield on Cost (%)": yoc,
+                                    "DY Atual (%)": dy_spot
+                                })
+                        except: continue
+                    
+                    df_divs = pd.DataFrame(linhas_div)
+                    if not df_divs.empty:
+                        st.dataframe(df_divs, use_container_width=True, hide_index=True)
+                        st.success(f"**Total Projetado/Recebido este mês:** R$ {df_divs['Total Recebido (R$)'].sum():,.2f}")
+                    else:
+                        st.info("Nenhum ativo da sua carteira pagou (ou anunciou pagamento) para este mês até o momento.")
+
+        with tab6:
+            st.markdown("### 🤖 Radar e Assistente de Investimentos")
+            # Usa o bloco unificado de IA abaixo
+            pass
+
+# ==========================================
+# 7. COMITÊ DE IA (Visível sempre)
+# ==========================================
+st.write("---")
+st.markdown("### 💬 Comitê de Alocação IA - Visão CNPI Sênior")
+
+api_key = ""
+try:
+    api_key = st.secrets["GEMINI_API_KEY"]
+except:
+    api_key = st.text_input("Chave API do Google Gemini:", type="password")
+
+for msg in st.session_state.historico_chat:
+    with st.chat_message(msg["role"]): st.write(msg["content"])
+    
+if prompt := st.chat_input("Ex: Com a Selic atual, como ajusto o meu Yield on Cost?"):
+    st.session_state.historico_chat.append({"role": "user", "content": prompt})
+    with st.chat_message("user"): st.write(prompt)
+    
+    ctx_carteira = "Nenhuma carteira carregada."
+    if not st.session_state.df_base.empty and 'df_perf_final' in locals():
+        ctx_carteira = df_perf_final[['Ativo', 'Qtd', 'Preço Médio', 'Preço Atual', 'Total Investido', 'Saldo Atual', 'Resultado (R$)', 'Total Div. (R$)', 'Evolução c/ Div']].to_csv(index=False, sep='|')
+        
+    ctx_macro = (f"Selic Vigente Hoje: {selic_hoje:.2f}% | IPCA Acum. 12 meses: {ipca_12m_hoje:.2f}%\n"
+                 f"Projeções Selic Fim de Ano: {ano_atual}: {proj_focus.get(f'Selic_{ano_atual}')}% | {ano_atual+1}: {proj_focus.get(f'Selic_{ano_atual+1}')}% | {ano_atual+2}: {proj_focus.get(f'Selic_{ano_atual+2}')}%\n"
+                 f"Projeções IPCA Fim de Ano: {ano_atual}: {proj_focus.get(f'IPCA_{ano_atual}')}% | {ano_atual+1}: {proj_focus.get(f'IPCA_{ano_atual+1}')}% | {ano_atual+2}: {proj_focus.get(f'IPCA_{ano_atual+2}')}%")
+    
+    sys_prompt = f"""
+    Você é uma Analista de Investimentos Sênior (CNPI) e Gestora de Portfólio.
+    Sua linguagem é corporativa, executiva, fria, baseada em dados e voltada a relatórios de alta governança.
+    
+    [MATRIZ DE DADOS EM TEMPO REAL]
+    {ctx_carteira}
+    
+    [CENÁRIO MACRO SPOT E FORWARD 3 ANOS]
+    {ctx_macro}
+    
+    [DIRETRIZES DE RESPOSTA]
+    - Não use linguagem de iniciante. Use termos técnicos apropriados.
+    - Se a carteira estiver vazia, foque inteiramente na análise do cenário Macro.
+    - Cruze os dados disponíveis de forma exata e matemática.
+    """
+    
+    if api_key:
+        try:
+            import google.generativeai as genai
+            genai.configure(api_key=api_key)
+            modelos_para_tentar = ['gemini-3.5-flash', 'gemini-3.1-flash-lite', 'gemini-2.5-flash']
+            resposta_sucesso = False
+            erros_tecnicos = []
+            
+            for nome_modelo in modelos_para_tentar:
+                try:
+                    model = genai.GenerativeModel(nome_modelo)
+                    response = model.generate_content([sys_prompt, prompt])
+                    resposta = response.text
+                    resposta_sucesso = True
+                    break 
+                except Exception as e:
+                    erros_tecnicos.append(f"{nome_modelo}: {str(e)}")
+                    continue
+                        
+            if not resposta_sucesso:
+                erro_formatado = "\n".join(erros_tecnicos)
+                resposta = f"⚠️ Falha de comunicação com a IA.\n\nLogs:\n`{erro_formatado}`"
+        except Exception as e:
+            resposta = f"⚠️ Erro estrutural grave: {str(e)}"
+    else:
+        resposta = "⚠️ Operação bloqueada. Insira a chave da API."
+    
+    st.session_state.historico_chat.append({"role": "assistant", "content": resposta})
+    st.rerun()
