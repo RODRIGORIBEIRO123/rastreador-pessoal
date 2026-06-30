@@ -56,10 +56,10 @@ def obter_fundamentos_brasil():
         return fundamentos
     except: return {}
 
-# NOVA FUNÇÃO: Busca o valor da Selic de mercado no momento
+# TAXA SPOT: Captura a Selic oficial exata de hoje
+@st.cache_data(ttl=86400)
 def obter_taxa_selic_atual():
     try:
-        # Acesso direto à API de indicadores do Brasil API (muito estável)
         res = requests.get("https://brasilapi.com.br/api/taxas/v1", timeout=5)
         if res.status_code == 200:
             taxas = res.json()
@@ -68,12 +68,11 @@ def obter_taxa_selic_atual():
                     return float(taxa['valor'])
     except:
         pass
-    return 10.50  # O último fallback apenas se não houver internet alguma
+    return 10.50
 
 @st.cache_data(ttl=86400)
 def obter_projecoes_focus():
     ano_atual = pd.Timestamp.now().year
-    # Inicializa com a taxa viva do dia, não com um valor "chutado"
     selic_viva = obter_taxa_selic_atual()
     fallback = {f"IPCA_{ano_atual}": 3.80, f"Selic_{ano_atual}": selic_viva, f"IPCA_{ano_atual+1}": 3.70, f"Selic_{ano_atual+1}": selic_viva - 1.0}
     
@@ -93,7 +92,6 @@ def obter_projecoes_focus():
             if not df_prox[df_prox['Indicador'] == 'Selic'].empty: fallback[f"Selic_{ano_atual+1}"] = float(df_prox[df_prox['Indicador'] == 'Selic']['Mediana'].values[0])
         return fallback, ano_atual
     except: 
-        # Se o Focus (Olinda) falhar, retorna o fallback que agora usa a Selic viva do Brasil API
         return fallback, ano_atual
 
 def calcular_macro_acumulado(df_macro, data_inicio, data_fim=None):
@@ -388,7 +386,15 @@ if not st.session_state.df_base.empty:
 
         with tab5:
             proj_focus, ano_atual = obter_projecoes_focus()
-            st.markdown(f"### 🇧🇷 Projeções Macroeconômicas")
+            selic_hoje = obter_taxa_selic_atual()
+            
+            st.markdown(f"### 🇧🇷 Cenário Macroeconômico")
+            
+            # Painel isolado para a SELIC ATUAL
+            st.success(f"🎯 **SELIC VIGENTE HOJE:** {selic_hoje:.2f}% a.a.")
+            
+            # Painel visual para as Projeções do Focus
+            st.markdown("##### 🔮 Projeções do Mercado (Boletim Focus para o fim do ano)")
             st.info(f"**IPCA {ano_atual}:** {proj_focus.get(f'IPCA_{ano_atual}', 5.33)}%  |  **Selic {ano_atual}:** {proj_focus.get(f'Selic_{ano_atual}', 10.50)}%  ||  **IPCA {ano_atual+1}:** {proj_focus.get(f'IPCA_{ano_atual+1}', 4.15)}%  |  **Selic {ano_atual+1}:** {proj_focus.get(f'Selic_{ano_atual+1}', 9.50)}%")
             
             st.markdown("### 🤖 Radar de Oportunidades do Especialista")
@@ -512,7 +518,7 @@ if not st.session_state.df_base.empty:
                             st.dataframe(df_custom, use_container_width=True, hide_index=True)
 
         # ==========================================
-        # ABA 7: TERMINAL DE IA COM LOG DE DEPURAÇÃO
+        # ABA 7: TERMINAL DE IA COM LOG DE DEPURAÇÃO E AUTO-DISCOVERY
         # ==========================================
         with tab7:
             st.markdown("### 🏢 Comitê de Alocação IA - Visão CNPI Sênior")
@@ -535,7 +541,7 @@ if not st.session_state.df_base.empty:
                 with st.chat_message("user"): st.write(prompt)
                 
                 contexto_carteira = df_perf_final[['Ativo', 'Qtd', 'Preço Médio', 'Preço Atual', 'Total Investido', 'Saldo Atual', 'Resultado (R$)', 'Total Div. (R$)', 'Evolução c/ Div']].to_csv(index=False, sep='|')
-                contexto_macro = f"Selic Corrente/Projetada: {proj_focus.get(f'Selic_{ano_atual}', 10.50)}% | IPCA Esperado: {proj_focus.get(f'IPCA_{ano_atual}', 5.33)}%"
+                contexto_macro = f"Selic Vigente Hoje: {selic_hoje:.2f}% | Projeção Selic {ano_atual}: {proj_focus.get(f'Selic_{ano_atual}', 10.50)}% | IPCA Esperado: {proj_focus.get(f'IPCA_{ano_atual}', 5.33)}%"
                 
                 sys_prompt = f"""
                 Você é uma Analista de Investimentos Sênior (CNPI) e Gestora de Portfólio.
@@ -558,7 +564,6 @@ if not st.session_state.df_base.empty:
                         import google.generativeai as genai
                         genai.configure(api_key=api_key)
                         
-                        # MATRIZ ATUALIZADA: Foco exclusivo nos motores ativos e gratuitos.
                         modelos_para_tentar = ['gemini-3.5-flash', 'gemini-3.1-flash-lite', 'gemini-2.5-flash']
                         resposta_sucesso = False
                         erros_tecnicos = []
