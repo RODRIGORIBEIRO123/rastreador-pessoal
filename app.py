@@ -56,25 +56,45 @@ def obter_fundamentos_brasil():
         return fundamentos
     except: return {}
 
+# NOVA FUNÇÃO: Busca o valor da Selic de mercado no momento
+def obter_taxa_selic_atual():
+    try:
+        # Acesso direto à API de indicadores do Brasil API (muito estável)
+        res = requests.get("https://brasilapi.com.br/api/taxas/v1", timeout=5)
+        if res.status_code == 200:
+            taxas = res.json()
+            for taxa in taxas:
+                if taxa['nome'] == 'Selic':
+                    return float(taxa['valor'])
+    except:
+        pass
+    return 10.50  # O último fallback apenas se não houver internet alguma
+
 @st.cache_data(ttl=86400)
 def obter_projecoes_focus():
     ano_atual = pd.Timestamp.now().year
-    fallback = {f"IPCA_{ano_atual}": 5.33, f"Selic_{ano_atual}": 14.00, f"IPCA_{ano_atual+1}": 4.15, f"Selic_{ano_atual+1}": 12.00}
+    # Inicializa com a taxa viva do dia, não com um valor "chutado"
+    selic_viva = obter_taxa_selic_atual()
+    fallback = {f"IPCA_{ano_atual}": 3.80, f"Selic_{ano_atual}": selic_viva, f"IPCA_{ano_atual+1}": 3.70, f"Selic_{ano_atual+1}": selic_viva - 1.0}
+    
     try:
         url = "https://olinda.bcb.gov.br/olinda/servico/Expectativas/versao/v1/odata/ExpectativasMercadoAnuais?$top=100&$filter=Indicador%20eq%20'IPCA'%20or%20Indicador%20eq%20'Selic'&$orderby=Data%20desc&$format=json"
-        res = requests.get(url, timeout=5).json()
+        res = requests.get(url, timeout=8).json()
         if 'value' in res and len(res['value']) > 0:
             df = pd.DataFrame(res['value'])
             data_recente = df['Data'].max()
             df = df[df['Data'] == data_recente]
             df_atual = df[df['DataReferencia'] == str(ano_atual)]
             df_prox = df[df['DataReferencia'] == str(ano_atual+1)]
+            
             if not df_atual[df_atual['Indicador'] == 'IPCA'].empty: fallback[f"IPCA_{ano_atual}"] = float(df_atual[df_atual['Indicador'] == 'IPCA']['Mediana'].values[0])
             if not df_atual[df_atual['Indicador'] == 'Selic'].empty: fallback[f"Selic_{ano_atual}"] = float(df_atual[df_atual['Indicador'] == 'Selic']['Mediana'].values[0])
             if not df_prox[df_prox['Indicador'] == 'IPCA'].empty: fallback[f"IPCA_{ano_atual+1}"] = float(df_prox[df_prox['Indicador'] == 'IPCA']['Mediana'].values[0])
             if not df_prox[df_prox['Indicador'] == 'Selic'].empty: fallback[f"Selic_{ano_atual+1}"] = float(df_prox[df_prox['Indicador'] == 'Selic']['Mediana'].values[0])
         return fallback, ano_atual
-    except: return fallback, ano_atual
+    except: 
+        # Se o Focus (Olinda) falhar, retorna o fallback que agora usa a Selic viva do Brasil API
+        return fallback, ano_atual
 
 def calcular_macro_acumulado(df_macro, data_inicio, data_fim=None):
     if df_macro is None or df_macro.empty or pd.isna(data_inicio): return 0.0, 0.0
@@ -368,8 +388,8 @@ if not st.session_state.df_base.empty:
 
         with tab5:
             proj_focus, ano_atual = obter_projecoes_focus()
-            st.markdown(f"### 🇧🇷 Projeções Macroeconômicas (Boletim Focus Bacen)")
-            st.info(f"**IPCA {ano_atual}:** {proj_focus.get(f'IPCA_{ano_atual}', 5.33)}%  |  **Selic {ano_atual}:** {proj_focus.get(f'Selic_{ano_atual}', 14.00)}%  ||  **IPCA {ano_atual+1}:** {proj_focus.get(f'IPCA_{ano_atual+1}', 4.15)}%  |  **Selic {ano_atual+1}:** {proj_focus.get(f'Selic_{ano_atual+1}', 12.00)}%")
+            st.markdown(f"### 🇧🇷 Projeções Macroeconômicas")
+            st.info(f"**IPCA {ano_atual}:** {proj_focus.get(f'IPCA_{ano_atual}', 5.33)}%  |  **Selic {ano_atual}:** {proj_focus.get(f'Selic_{ano_atual}', 10.50)}%  ||  **IPCA {ano_atual+1}:** {proj_focus.get(f'IPCA_{ano_atual+1}', 4.15)}%  |  **Selic {ano_atual+1}:** {proj_focus.get(f'Selic_{ano_atual+1}', 9.50)}%")
             
             st.markdown("### 🤖 Radar de Oportunidades do Especialista")
             
@@ -510,12 +530,12 @@ if not st.session_state.df_base.empty:
             for msg in st.session_state.historico_chat:
                 with st.chat_message(msg["role"]): st.write(msg["content"])
                 
-            if prompt := st.chat_input("Ex: Com a Selic a 14%, devo aumentar minha margem de Graham exigida?"):
+            if prompt := st.chat_input("Ex: Com a Selic a 10.50%, devo aumentar minha margem de Graham exigida?"):
                 st.session_state.historico_chat.append({"role": "user", "content": prompt})
                 with st.chat_message("user"): st.write(prompt)
                 
                 contexto_carteira = df_perf_final[['Ativo', 'Qtd', 'Preço Médio', 'Preço Atual', 'Total Investido', 'Saldo Atual', 'Resultado (R$)', 'Total Div. (R$)', 'Evolução c/ Div']].to_csv(index=False, sep='|')
-                contexto_macro = f"Selic Corrente/Projetada: {proj_focus.get(f'Selic_{ano_atual}', 14.0)}% | IPCA Esperado: {proj_focus.get(f'IPCA_{ano_atual}', 5.33)}%"
+                contexto_macro = f"Selic Corrente/Projetada: {proj_focus.get(f'Selic_{ano_atual}', 10.50)}% | IPCA Esperado: {proj_focus.get(f'IPCA_{ano_atual}', 5.33)}%"
                 
                 sys_prompt = f"""
                 Você é uma Analista de Investimentos Sênior (CNPI) e Gestora de Portfólio.
@@ -538,7 +558,7 @@ if not st.session_state.df_base.empty:
                         import google.generativeai as genai
                         genai.configure(api_key=api_key)
                         
-                        # MATRIZ ATUALIZADA: Foco exclusivo nos motores ativos e estáveis em 2026.
+                        # MATRIZ ATUALIZADA: Foco exclusivo nos motores ativos e gratuitos.
                         modelos_para_tentar = ['gemini-3.5-flash', 'gemini-3.1-flash-lite', 'gemini-2.5-flash']
                         resposta_sucesso = False
                         erros_tecnicos = []
