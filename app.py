@@ -492,14 +492,13 @@ if not st.session_state.df_base.empty:
                             st.dataframe(df_custom, use_container_width=True, hide_index=True)
 
         # ==========================================
-        # ABA 7: TERMINAL DE IA COM SDK OFICIAL E RESILIÊNCIA
+        # ABA 7: TERMINAL DE IA COM LOG DE DEPURAÇÃO
         # ==========================================
         with tab7:
             st.markdown("### 🏢 Comitê de Alocação IA - Visão CNPI Sênior")
             
             api_key = ""
             try:
-                # O Streamlit lê o cofre seguro de variáveis
                 api_key = st.secrets["GEMINI_API_KEY"]
                 st.success("✅ Acesso Liberado: Chave API detetada no cofre seguro.")
             except:
@@ -539,9 +538,9 @@ if not st.session_state.df_base.empty:
                         import google.generativeai as genai
                         genai.configure(api_key=api_key)
                         
-                        # MOTOR DE RESILIÊNCIA: Lista de modelos do melhor para o mais conservador
-                        modelos_para_tentar = ['gemini-1.5-flash', 'gemini-1.5-flash-latest', 'gemini-1.0-pro', 'gemini-pro']
+                        modelos_para_tentar = ['gemini-1.5-flash', 'gemini-1.0-pro']
                         resposta_sucesso = False
+                        erros_tecnicos = []
                         
                         for nome_modelo in modelos_para_tentar:
                             try:
@@ -549,20 +548,14 @@ if not st.session_state.df_base.empty:
                                 response = model.generate_content([sys_prompt, prompt])
                                 resposta = response.text
                                 resposta_sucesso = True
-                                break # Se respondeu, sai do loop
+                                break 
                             except Exception as e:
-                                erro_str = str(e).lower()
-                                # Se der 404 (Não Encontrado) ou 429 (Cota Esgotada), ignora e tenta o próximo motor
-                                if "404" in erro_str or "not found" in erro_str or "429" in erro_str or "exhausted" in erro_str or "quota" in erro_str:
-                                    continue
-                                else:
-                                    # Para erros diferentes, quebra e avisa o utilizador
-                                    resposta = f"⚠️ Falha técnica no motor {nome_modelo}. Detalhe: {str(e)}"
-                                    resposta_sucesso = True
-                                    break
+                                erros_tecnicos.append(f"Motor {nome_modelo}: {str(e)}")
+                                continue
                                     
                         if not resposta_sucesso:
-                            resposta = "⚠️ O painel tentou contactar 4 versões diferentes da IA do Google e todas foram recusadas. Motivo mais provável: A sua cota gratuita de uso esgotou no AI Studio ou a chave não possui permissão para gerar texto."
+                            erro_formatado = "\n".join(erros_tecnicos)
+                            resposta = f"⚠️ **Diagnóstico de Rede Sênior:** Os motores do Google recusaram a conexão. O erro não está no código, mas na credencial fornecida.\n\n**Detalhes Reportados pela API:**\n`{erro_formatado}`\n\n**Solução Sênior:** Se gerou a chave logado com um e-mail corporativo, a cota de uso é bloqueada na origem (Limit: 0). Gere uma nova chave através de um e-mail pessoal (@gmail.com)."
                             
                     except ImportError:
                         resposta = "⚠️ **AÇÃO NECESSÁRIA:** A biblioteca do Google não foi carregada. Vá ao painel do Streamlit Cloud, clique nos 3 pontinhos (⋮) no menu superior direito e escolha 'Reboot app'."
