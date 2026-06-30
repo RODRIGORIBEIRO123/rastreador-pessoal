@@ -538,7 +538,8 @@ if not st.session_state.df_base.empty:
                         import google.generativeai as genai
                         genai.configure(api_key=api_key)
                         
-                        modelos_para_tentar = ['gemini-1.5-flash', 'gemini-1.0-pro']
+                        # MATRIZ ATUALIZADA: Foco exclusivo nos motores ativos e estáveis em 2026.
+                        modelos_para_tentar = ['gemini-3.5-flash', 'gemini-3.1-flash-lite', 'gemini-2.5-flash']
                         resposta_sucesso = False
                         erros_tecnicos = []
                         
@@ -555,7 +556,7 @@ if not st.session_state.df_base.empty:
                                     
                         if not resposta_sucesso:
                             erro_formatado = "\n".join(erros_tecnicos)
-                            resposta = f"⚠️ **Diagnóstico de Rede Sênior:** Os motores do Google recusaram a conexão. O erro não está no código, mas na credencial fornecida.\n\n**Detalhes Reportados pela API:**\n`{erro_formatado}`\n\n**Solução Sênior:** Se gerou a chave logado com um e-mail corporativo, a cota de uso é bloqueada na origem (Limit: 0). Gere uma nova chave através de um e-mail pessoal (@gmail.com)."
+                            resposta = f"⚠️ **Diagnóstico de Rede Sênior:** Falha de comunicação. Nenhum dos motores atualizados respondeu. Verifique se o Streamlit Cloud tem permissões de rede de saída ou valide as quotas no AI Studio.\n\n**Logs Técnicos:**\n`{erro_formatado}`"
                             
                     except ImportError:
                         resposta = "⚠️ **AÇÃO NECESSÁRIA:** A biblioteca do Google não foi carregada. Vá ao painel do Streamlit Cloud, clique nos 3 pontinhos (⋮) no menu superior direito e escolha 'Reboot app'."
