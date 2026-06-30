@@ -492,22 +492,20 @@ if not st.session_state.df_base.empty:
                             st.dataframe(df_custom, use_container_width=True, hide_index=True)
 
         # ==========================================
-        # ABA 7: TERMINAL DE IA COM INJEÇÃO DE SEGREDOS
+        # ABA 7: TERMINAL DE IA COM SDK OFICIAL E RESILIÊNCIA
         # ==========================================
         with tab7:
             st.markdown("### 🏢 Comitê de Alocação IA - Visão CNPI Sênior")
             
             api_key = ""
             try:
-                # 1. TENTA LER A CHAVE INVISÍVEL DO STREAMLIT CLOUD
+                # O Streamlit lê o cofre seguro de variáveis
                 api_key = st.secrets["GEMINI_API_KEY"]
-                st.success("✅ Acesso Liberado: Chave API detetada no cofre seguro do servidor.")
+                st.success("✅ Acesso Liberado: Chave API detetada no cofre seguro.")
             except:
-                # 2. SE NÃO ESTIVER LÁ, MOSTRA O CAMPO MANUAL (FALLBACK)
                 st.warning("⚠️ Chave API não encontrada nos Segredos do Streamlit. Insira no campo abaixo para habilitar a IA.")
                 api_key_input = st.text_input("Chave API do Google Gemini:", type="password")
-                if api_key_input:
-                    api_key = api_key_input
+                if api_key_input: api_key = api_key_input
             
             st.write("---")
             for msg in st.session_state.historico_chat:
@@ -537,23 +535,39 @@ if not st.session_state.df_base.empty:
                 """
                 
                 if api_key:
-                    # ROTA DIRETA E OTIMIZADA PARA O MODELO 1.5 FLASH (Sem auto-discovery para evitar timeout)
-                    url_api = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
-                    payload = {"contents": [{"parts": [{"text": f"{sys_prompt}\n\nPergunta do Gestor: {prompt}"}]}]}
-                    headers = {"Content-Type": "application/json"}
-                    
                     try:
-                        # TIMEOUT ESTENDIDO PARA 25 SEGUNDOS (O Sênior precisa de tempo para analisar a carteira)
-                        res_api = requests.post(url_api, json=payload, headers=headers, timeout=25)
+                        import google.generativeai as genai
+                        genai.configure(api_key=api_key)
                         
-                        if res_api.status_code == 200:
-                            resposta = res_api.json()['contents'][0]['parts'][0]['text']
-                        else:
-                            resposta = f"⚠️ Ocorreu uma falha na API do Google (Erro {res_api.status_code}). Detalhe técnico para depuração: {res_api.text}"
-                    except requests.exceptions.Timeout:
-                        resposta = "⚠️ Ocorreu um *Timeout*. O volume de dados da carteira fez a conexão com o Google ultrapassar o tempo limite de 25 segundos do servidor. Tente simplificar a pergunta ou tente novamente em instantes."
+                        # MOTOR DE RESILIÊNCIA: Lista de modelos do melhor para o mais conservador
+                        modelos_para_tentar = ['gemini-1.5-flash', 'gemini-1.5-flash-latest', 'gemini-1.0-pro', 'gemini-pro']
+                        resposta_sucesso = False
+                        
+                        for nome_modelo in modelos_para_tentar:
+                            try:
+                                model = genai.GenerativeModel(nome_modelo)
+                                response = model.generate_content([sys_prompt, prompt])
+                                resposta = response.text
+                                resposta_sucesso = True
+                                break # Se respondeu, sai do loop
+                            except Exception as e:
+                                erro_str = str(e).lower()
+                                # Se der 404 (Não Encontrado) ou 429 (Cota Esgotada), ignora e tenta o próximo motor
+                                if "404" in erro_str or "not found" in erro_str or "429" in erro_str or "exhausted" in erro_str or "quota" in erro_str:
+                                    continue
+                                else:
+                                    # Para erros diferentes, quebra e avisa o utilizador
+                                    resposta = f"⚠️ Falha técnica no motor {nome_modelo}. Detalhe: {str(e)}"
+                                    resposta_sucesso = True
+                                    break
+                                    
+                        if not resposta_sucesso:
+                            resposta = "⚠️ O painel tentou contactar 4 versões diferentes da IA do Google e todas foram recusadas. Motivo mais provável: A sua cota gratuita de uso esgotou no AI Studio ou a chave não possui permissão para gerar texto."
+                            
+                    except ImportError:
+                        resposta = "⚠️ **AÇÃO NECESSÁRIA:** A biblioteca do Google não foi carregada. Vá ao painel do Streamlit Cloud, clique nos 3 pontinhos (⋮) no menu superior direito e escolha 'Reboot app'."
                     except Exception as e:
-                        resposta = f"⚠️ Falha estrutural de rede. Detalhe: {e}"
+                        resposta = f"⚠️ Erro estrutural grave. Detalhe: {str(e)}"
                 else:
                     resposta = "⚠️ Operação bloqueada. Sem a chave da API do Gemini, o módulo de inteligência não pode ser executado. Insira a chave no painel de Segredos do Streamlit Cloud."
                 
