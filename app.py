@@ -7,6 +7,8 @@ import re
 import io
 import requests
 import plotly.express as px
+import json
+import os
 
 # ==========================================
 # 1. CONFIGURAÇÃO E FORMATADORES DE DADOS
@@ -33,8 +35,23 @@ if 'df_base' not in st.session_state: st.session_state.df_base = pd.DataFrame()
 if 'dados_mercado' not in st.session_state: st.session_state.dados_mercado = {}
 if 'df_simul' not in st.session_state: st.session_state.df_simul = pd.DataFrame()
 
+# Sistema de Persistência do Chat
+ARQUIVO_CHAT = "historico_ia.json"
+MENSAGEM_INICIAL = [{"role": "assistant", "content": "Saudações. O terminal está mapeado em tempo real. Pode fazer a sua pergunta sobre o cenário macroeconômico ou a sua carteira."}]
+
 if 'historico_chat' not in st.session_state:
-    st.session_state.historico_chat = [{"role": "assistant", "content": "Saudações. O terminal está mapeado em tempo real. Pode fazer a sua pergunta sobre o cenário macroeconômico ou a sua carteira."}]
+    if os.path.exists(ARQUIVO_CHAT):
+        try:
+            with open(ARQUIVO_CHAT, "r", encoding="utf-8") as f:
+                st.session_state.historico_chat = json.load(f)
+        except:
+            st.session_state.historico_chat = MENSAGEM_INICIAL.copy()
+    else:
+        st.session_state.historico_chat = MENSAGEM_INICIAL.copy()
+
+def salvar_chat():
+    with open(ARQUIVO_CHAT, "w", encoding="utf-8") as f:
+        json.dump(st.session_state.historico_chat, f, ensure_ascii=False, indent=4)
 
 # ==========================================
 # 2. FUNÇÕES MACRO E FUNDAMENTOS
@@ -485,7 +502,14 @@ if not st.session_state.df_base.empty:
 # 8. COMITÊ DE IA E CHAT (SEMPRE VISÍVEL)
 # ==========================================
 st.write("---")
-st.markdown("### 💬 Comitê de Alocação IA - Visão CNPI Sênior")
+c_chat1, c_chat2 = st.columns([10, 2])
+with c_chat1:
+    st.markdown("### 💬 Comitê de Alocação IA - Visão CNPI Sênior")
+with c_chat2:
+    if st.button("🗑️ Limpar Chat"):
+        st.session_state.historico_chat = MENSAGEM_INICIAL.copy()
+        if os.path.exists(ARQUIVO_CHAT): os.remove(ARQUIVO_CHAT)
+        st.rerun()
 
 api_key = ""
 try:
@@ -498,6 +522,7 @@ for msg in st.session_state.historico_chat:
     
 if prompt := st.chat_input("Ex: Com a Selic atual, devo aportar em Renda Fixa ou FIIs?"):
     st.session_state.historico_chat.append({"role": "user", "content": prompt})
+    salvar_chat()
     with st.chat_message("user"): st.write(prompt)
     
     ctx_carteira = "Nenhuma carteira carregada."
@@ -552,4 +577,5 @@ if prompt := st.chat_input("Ex: Com a Selic atual, devo aportar em Renda Fixa ou
         resposta = "⚠️ Operação bloqueada. Insira a chave da API do Gemini."
     
     st.session_state.historico_chat.append({"role": "assistant", "content": resposta})
+    salvar_chat()
     st.rerun()
