@@ -9,12 +9,17 @@ import requests
 import plotly.express as px
 
 # ==========================================
-# 1. CONFIGURAÇÃO, MEMÓRIA E DICIONÁRIOS
+# 1. CONFIGURAÇÃO E FORMATADORES DE DADOS
 # ==========================================
 st.set_page_config(page_title="Terminal de Gestão CNPI", layout="wide")
 
 data_hoje = pd.Timestamp.now().strftime('%d/%m/%Y')
 st.title(f"📊 Terminal de Gestão Profissional - {data_hoje}")
+
+# Formatadores Sênior (Padrão Financeiro Brasileiro)
+def f_brl(x): return f"R$ {x:,.2f}".replace(",", "v").replace(".", ",").replace("v", ".")
+def f_brl_4(x): return f"R$ {x:,.4f}".replace(",", "v").replace(".", ",").replace("v", ".")
+def f_pct(x): return f"{x:,.2f}%".replace(",", "v").replace(".", ",").replace("v", ".")
 
 MAPEAMENTO_TICKERS = {
     "GALG11": "GARE11", "SOMA3": "ALOS3", "ARZZ3": "ALOS3", 
@@ -32,7 +37,7 @@ if 'historico_chat' not in st.session_state:
     st.session_state.historico_chat = [{"role": "assistant", "content": "Saudações. O terminal está mapeado em tempo real. Pode fazer a sua pergunta sobre o cenário macroeconômico ou a sua carteira."}]
 
 # ==========================================
-# 2. FUNÇÕES MACRO E DADOS
+# 2. FUNÇÕES MACRO E FUNDAMENTOS
 # ==========================================
 @st.cache_data(ttl=86400)
 def carregar_macro():
@@ -138,6 +143,9 @@ def traduzir_setor(setor_en):
     }
     return mapa.get(setor_en, "Outros Setores")
 
+# ==========================================
+# 3. LÓGICA DE PROCESSAMENTO DE ATIVOS
+# ==========================================
 def consolidar_carteira(df):
     if df.empty: return df
     df['Ativo'] = df['Ativo'].astype(str).str.strip().str.upper()
@@ -194,7 +202,7 @@ def processar_planilha_b3(df):
     return consolidar_carteira(pd.DataFrame(ativos_limpos))
 
 # ==========================================
-# 3. SISTEMA DE UPLOAD (OPCIONAL)
+# 4. SISTEMA DE UPLOAD DE DADOS
 # ==========================================
 st.sidebar.header("1. Upload de Arquivos")
 arquivo_principal = st.sidebar.file_uploader("1️⃣ Planilha Principal (Opcional)", type=["xlsx", "csv"])
@@ -230,7 +238,7 @@ if st.sidebar.button("🚀 Carregar e Rodar Aplicativo", use_container_width=Tru
             st.rerun()
 
 # ==========================================
-# 4. PAINEL MACRO (SEMPRE VISÍVEL)
+# 5. PAINEL MACRO (SEMPRE VISÍVEL)
 # ==========================================
 proj_focus, ano_atual = obter_projecoes_focus()
 selic_hoje, ipca_12m_hoje = obter_macro_atual()
@@ -238,21 +246,20 @@ selic_hoje, ipca_12m_hoje = obter_macro_atual()
 st.markdown("### 🇧🇷 Conjuntura Macroeconômica")
 
 c_mac1, c_mac2 = st.columns([1, 2])
-c_mac1.success(f"🎯 **Cenário Atual (Vigente)**\n\nSelic Atual: **{selic_hoje:.2f}% a.a.**\n\nIPCA 12 meses: **{ipca_12m_hoje:.2f}%**")
+c_mac1.success(f"🎯 **Cenário Atual (Vigente)**\n\nSelic Atual: **{f_pct(selic_hoje)} a.a.**\n\nIPCA 12 meses: **{f_pct(ipca_12m_hoje)}**")
 c_mac2.info(
     f"🔮 **Projeções do Mercado (Focus)**\n\n"
-    f"**Selic:** {ano_atual}: **{proj_focus.get(f'Selic_{ano_atual}', 0):.2f}%**  |  "
-    f"{ano_atual+1}: **{proj_focus.get(f'Selic_{ano_atual+1}', 0):.2f}%**  |  "
-    f"{ano_atual+2}: **{proj_focus.get(f'Selic_{ano_atual+2}', 0):.2f}%**\n\n"
-    f"**IPCA:** {ano_atual}: **{proj_focus.get(f'IPCA_{ano_atual}', 0):.2f}%**  |  "
-    f"{ano_atual+1}: **{proj_focus.get(f'IPCA_{ano_atual+1}', 0):.2f}%**  |  "
-    f"{ano_atual+2}: **{proj_focus.get(f'IPCA_{ano_atual+2}', 0):.2f}%**"
+    f"**Selic:** {ano_atual}: **{f_pct(proj_focus.get(f'Selic_{ano_atual}', 0))}**  |  "
+    f"{ano_atual+1}: **{f_pct(proj_focus.get(f'Selic_{ano_atual+1}', 0))}**  |  "
+    f"{ano_atual+2}: **{f_pct(proj_focus.get(f'Selic_{ano_atual+2}', 0))}**\n\n"
+    f"**IPCA:** {ano_atual}: **{f_pct(proj_focus.get(f'IPCA_{ano_atual}', 0))}**  |  "
+    f"{ano_atual+1}: **{f_pct(proj_focus.get(f'IPCA_{ano_atual+1}', 0))}**  |  "
+    f"{ano_atual+2}: **{f_pct(proj_focus.get(f'IPCA_{ano_atual+2}', 0))}**"
 )
-
 st.write("---")
 
 # ==========================================
-# 5. CONTROLE DE CARTEIRA (SE HOUVER)
+# 6. BANCO DE DADOS E CONEXÃO B3
 # ==========================================
 if not st.session_state.df_base.empty:
     st.markdown("### 2. Controle do Banco de Dados")
@@ -315,7 +322,7 @@ if not st.session_state.df_base.empty:
         st.success("Conexão Estabelecida com Sucesso!")
 
 # ==========================================
-# 6. DASHBOARD, ABAS E PROVENTOS
+# 7. DASHBOARD E PAINEL DE RELATÓRIOS
 # ==========================================
     if st.session_state.dados_mercado:
         linhas_perf = []
@@ -330,7 +337,7 @@ if not st.session_state.df_base.empty:
                 "Ativo": t, "Tipo": dm["Tipo"], "Setor": dm["Setor"], "Qtd": int(dm['Qtd']), "Preço Médio": dm['PM'], "Preço Atual": dm['Preço Atual'],
                 "Total Investido": investido, "Saldo Atual": saldo, "Resultado (R$)": resultado,
                 "Data Média": dm['Data'].strftime('%d/%m/%Y'), "Meses (Média)": int(calcular_meses(dm['Data'])),
-                "Total Div. (R$)": dm['Div_Total'], "DY on Cost": yoc, "Evolução c/ Div": var_c_div, "IPCA Acum.": dm['IPCA'], "CDI Acum.": dm['CDI']
+                "Total Div. (R$)": dm['Div_Total'], "DY on Cost (%)": yoc, "Evolução c/ Div (%)": var_c_div, "IPCA Acum. (%)": dm['IPCA'], "CDI Acum. (%)": dm['CDI']
             })
         df_perf_final = pd.DataFrame(linhas_perf)
 
@@ -341,17 +348,22 @@ if not st.session_state.df_base.empty:
         evolucao_fiis = (df_fiis['Saldo Atual'].sum() / df_fiis['Total Investido'].sum() - 1) * 100 if df_fiis['Total Investido'].sum() > 0 else 0
 
         m1, m2, m3, m4 = st.columns(4)
-        m1.metric("📈 Patrimônio (Ações)", f"R$ {df_acoes['Saldo Atual'].sum():,.2f}", f"{evolucao_acoes:.2f}%")
-        m2.metric("🏢 Patrimônio (FIIs)", f"R$ {df_fiis['Saldo Atual'].sum():,.2f}", f"{evolucao_fiis:.2f}%")
-        m3.metric("💸 Renda Acumulada (Ações)", f"R$ {df_acoes['Total Div. (R$)'].sum():,.2f}")
-        m4.metric("💸 Renda Acumulada (FIIs)", f"R$ {df_fiis['Total Div. (R$)'].sum():,.2f}")
+        m1.metric("📈 Patrimônio (Ações)", f_brl(df_acoes['Saldo Atual'].sum()), f_pct(evolucao_acoes))
+        m2.metric("🏢 Patrimônio (FIIs)", f_brl(df_fiis['Saldo Atual'].sum()), f_pct(evolucao_fiis))
+        m3.metric("💸 Renda Acumulada (Ações)", f_brl(df_acoes['Total Div. (R$)'].sum()))
+        m4.metric("💸 Renda Acumulada (FIIs)", f_brl(df_fiis['Total Div. (R$)'].sum()))
 
         tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-            "📊 Visão Geral", "💰 Valuation (Bazin & Graham)", "⚖️ Pesos e Setores", "📈 Gráficos", "💸 Proventos (Mês Atual)", "💬 IA & Recomendações"
+            "📊 Visão Geral", "💰 Valuation (Bazin & Graham)", "⚖️ Pesos e Setores", "📈 Gráficos", "💸 Proventos (Filtro Mensal)", "💬 IA & Recomendações"
         ])
         
         with tab1:
-            st.dataframe(df_perf_final.drop(columns=['Tipo', 'Setor']), use_container_width=True, hide_index=True)
+            styled_perf = df_perf_final.drop(columns=['Tipo', 'Setor']).style.format({
+                "Preço Médio": f_brl, "Preço Atual": f_brl, "Total Investido": f_brl, 
+                "Saldo Atual": f_brl, "Resultado (R$)": f_brl, "Total Div. (R$)": f_brl,
+                "DY on Cost (%)": f_pct, "Evolução c/ Div (%)": f_pct, "IPCA Acum. (%)": f_pct, "CDI Acum. (%)": f_pct
+            })
+            st.dataframe(styled_perf, use_container_width=True, hide_index=True)
 
         with tab2:
             st.markdown("#### 1. Método Bazin (Foco em Renda)")
@@ -364,9 +376,11 @@ if not st.session_state.df_base.empty:
             for _, row in df_bazin_editado.iterrows():
                 bazin = (row.iloc[2] / yield_desejado) if (row.iloc[2] > 0 and yield_desejado > 0) else 0.0
                 margem_b = (((bazin / row['Cotação Atual']) - 1) * 100) if (bazin > 0 and row['Cotação Atual'] > 0) else 0.0
-                linhas_bazin.append({"Ativo": row['Ativo'], "Preço Teto (Bazin)": bazin, "Margem Segurança": margem_b})
+                linhas_bazin.append({"Ativo": row['Ativo'], "Preço Teto (Bazin)": bazin, "Margem Segurança (%)": margem_b})
+            
             st.session_state.df_rec_bazin = pd.DataFrame(linhas_bazin)
-            st.dataframe(st.session_state.df_rec_bazin, use_container_width=True, hide_index=True)
+            styled_bazin = st.session_state.df_rec_bazin.style.format({"Preço Teto (Bazin)": f_brl, "Margem Segurança (%)": f_pct})
+            st.dataframe(styled_bazin, use_container_width=True, hide_index=True)
             
             st.markdown("#### 2. Método Graham (Foco em Valor)")
             df_graham_view = st.session_state.df_simul[["Ativo", "Cotação Atual", "VPA (Contábil)", "LPA Projetado"]].copy()
@@ -378,9 +392,11 @@ if not st.session_state.df_base.empty:
             for _, row in df_graham_editado.iterrows():
                 graham = (22.5 * row['LPA Projetado'] * row['VPA (Contábil)']) ** 0.5 if (row['LPA Projetado'] > 0 and row['VPA (Contábil)'] > 0) else 0.0
                 margem_g = (((graham / row['Cotação Atual']) - 1) * 100) if (graham > 0 and row['Cotação Atual'] > 0) else 0.0
-                linhas_graham.append({"Ativo": row['Ativo'], "Preço Justo (Graham)": graham, "Margem Segurança": margem_g})
+                linhas_graham.append({"Ativo": row['Ativo'], "Preço Justo (Graham)": graham, "Margem Segurança (%)": margem_g})
+            
             st.session_state.df_rec_graham = pd.DataFrame(linhas_graham)
-            st.dataframe(st.session_state.df_rec_graham, use_container_width=True, hide_index=True)
+            styled_graham = st.session_state.df_rec_graham.style.format({"Preço Justo (Graham)": f_brl, "Margem Segurança (%)": f_pct})
+            st.dataframe(styled_graham, use_container_width=True, hide_index=True)
 
         with tab3:
             c_g1, c_g2, c_g3 = st.columns(3)
@@ -392,7 +408,7 @@ if not st.session_state.df_base.empty:
             todos_ativos = df_perf_final['Ativo'].tolist()
             c_sel, c_ind = st.columns([2, 1])
             with c_sel: ativos_selecionados = st.multiselect("Selecione os ativos:", todos_ativos, default=todos_ativos[:6], key="ms_g")
-            with c_ind: ind_selecionados = st.multiselect("Indicadores:", ["Evolução c/ Div", "CDI Acum.", "IPCA Acum."], default=["Evolução c/ Div", "CDI Acum.", "IPCA Acum."], key="ind_g")
+            with c_ind: ind_selecionados = st.multiselect("Indicadores:", ["Evolução c/ Div (%)", "CDI Acum. (%)", "IPCA Acum. (%)"], default=["Evolução c/ Div (%)", "CDI Acum. (%)", "IPCA Acum. (%)"], key="ind_g")
             
             if ativos_selecionados and ind_selecionados:
                 df_grafico = df_perf_final[df_perf_final['Ativo'].isin(ativos_selecionados)].copy()
@@ -403,48 +419,70 @@ if not st.session_state.df_base.empty:
                 st.plotly_chart(fig1, use_container_width=True)
 
         with tab5:
-            st.markdown("### 💸 Relatório de Proventos (Mês Atual)")
+            st.markdown("### 💸 Filtro e Histórico de Proventos")
+            
+            c_f1, c_f2, c_btn = st.columns([2, 2, 2])
+            meses_map = {1: "Janeiro", 2: "Fevereiro", 3: "Março", 4: "Abril", 5: "Maio", 6: "Junho", 7: "Julho", 8: "Agosto", 9: "Setembro", 10: "Outubro", 11: "Novembro", 12: "Dezembro"}
             mes_atual = pd.Timestamp.now().month
             ano_atual_data = pd.Timestamp.now().year
             
-            if st.button("🔄 Calcular Proventos deste Mês", use_container_width=True):
-                with st.spinner("Conectando ao histórico de pagamentos..."):
+            mes_selecionado = c_f1.selectbox("Mês de Referência:", options=list(meses_map.keys()), format_func=lambda x: meses_map[x], index=mes_atual-1)
+            ano_selecionado = c_f2.selectbox("Ano de Referência:", options=[ano_atual_data, ano_atual_data-1, ano_atual_data-2, ano_atual_data-3, ano_atual_data-4])
+            
+            if 'divs_calculados' not in st.session_state:
+                st.session_state.divs_calculados = None
+                st.session_state.divs_mes = mes_atual
+                st.session_state.divs_ano = ano_atual_data
+
+            if c_btn.button("🔄 Processar Dividendos do Período", use_container_width=True) or st.session_state.divs_calculados is None:
+                st.session_state.divs_mes = mes_selecionado
+                st.session_state.divs_ano = ano_selecionado
+                
+                with st.spinner(f"Varrendo histórico de pagamentos de {meses_map[mes_selecionado]}/{ano_selecionado}..."):
                     linhas_div = []
                     for t, dm in st.session_state.dados_mercado.items():
                         try:
                             acao = yf.Ticker(f"{t}.SA")
                             divs = acao.dividends
-                            # Filtra rigorosamente o mês e ano corrente
-                            divs_mes = divs[(divs.index.month == mes_atual) & (divs.index.year == ano_atual_data)].sum()
-                            
-                            if divs_mes > 0:
-                                yoc = ((divs_mes * dm['Qtd']) / (dm['Qtd'] * dm['PM'])) * 100 if dm['PM'] > 0 else 0
-                                dy_spot = (divs_mes / dm['Preço Atual']) * 100 if dm['Preço Atual'] > 0 else 0
+                            if not divs.empty:
+                                if divs.index.tz is not None: divs.index = divs.index.tz_localize(None)
+                                divs_mes = divs[(divs.index.month == st.session_state.divs_mes) & (divs.index.year == st.session_state.divs_ano)].sum()
                                 
-                                linhas_div.append({
-                                    "Ativo": t, 
-                                    "Provento Unit. (R$)": divs_mes,
-                                    "Qtd Detida": int(dm['Qtd']),
-                                    "Total Recebido (R$)": divs_mes * dm['Qtd'],
-                                    "Yield on Cost (%)": yoc,
-                                    "DY Atual (%)": dy_spot
-                                })
+                                if divs_mes > 0:
+                                    yoc = ((divs_mes * dm['Qtd']) / (dm['Qtd'] * dm['PM'])) * 100 if dm['PM'] > 0 else 0
+                                    dy_spot = (divs_mes / dm['Preço Atual']) * 100 if dm['Preço Atual'] > 0 else 0
+                                    
+                                    linhas_div.append({
+                                        "Ativo": t, 
+                                        "Provento Unit. (R$)": float(divs_mes),
+                                        "Qtd Detida": int(dm['Qtd']),
+                                        "Total Recebido (R$)": float(divs_mes * dm['Qtd']),
+                                        "Yield on Cost (%)": float(yoc),
+                                        "DY Atual (%)": float(dy_spot)
+                                    })
                         except: continue
-                    
-                    df_divs = pd.DataFrame(linhas_div)
-                    if not df_divs.empty:
-                        st.dataframe(df_divs, use_container_width=True, hide_index=True)
-                        st.success(f"**Total Projetado/Recebido este mês:** R$ {df_divs['Total Recebido (R$)'].sum():,.2f}")
-                    else:
-                        st.info("Nenhum ativo da sua carteira pagou (ou anunciou pagamento) para este mês até o momento.")
+                    st.session_state.divs_calculados = pd.DataFrame(linhas_div)
+            
+            df_divs = st.session_state.divs_calculados
+            if df_divs is not None and not df_divs.empty:
+                styled_df = df_divs.style.format({
+                    "Provento Unit. (R$)": f_brl_4,
+                    "Total Recebido (R$)": f_brl,
+                    "Yield on Cost (%)": f_pct,
+                    "DY Atual (%)": f_pct
+                })
+                st.dataframe(styled_df, use_container_width=True, hide_index=True)
+                total_br = f_brl(df_divs['Total Recebido (R$)'].sum())
+                st.success(f"**Total Recebido em {meses_map[st.session_state.divs_mes]}/{st.session_state.divs_ano}:** {total_br}")
+            elif df_divs is not None and df_divs.empty:
+                st.info(f"A sua base de ativos não regista proventos para {meses_map[st.session_state.divs_mes]}/{st.session_state.divs_ano}.")
 
         with tab6:
-            st.markdown("### 🤖 Radar e Assistente de Investimentos")
-            # Usa o bloco unificado de IA abaixo
-            pass
+            st.markdown("### 🤖 Radar e Recomendações")
+            st.info("Utilize a aba inferior (Comitê de IA) para solicitar análises avançadas de balanço.")
 
 # ==========================================
-# 7. COMITÊ DE IA (Visível sempre)
+# 8. COMITÊ DE IA E CHAT (SEMPRE VISÍVEL)
 # ==========================================
 st.write("---")
 st.markdown("### 💬 Comitê de Alocação IA - Visão CNPI Sênior")
@@ -458,17 +496,17 @@ except:
 for msg in st.session_state.historico_chat:
     with st.chat_message(msg["role"]): st.write(msg["content"])
     
-if prompt := st.chat_input("Ex: Com a Selic atual, como ajusto o meu Yield on Cost?"):
+if prompt := st.chat_input("Ex: Com a Selic atual, devo aportar em Renda Fixa ou FIIs?"):
     st.session_state.historico_chat.append({"role": "user", "content": prompt})
     with st.chat_message("user"): st.write(prompt)
     
     ctx_carteira = "Nenhuma carteira carregada."
     if not st.session_state.df_base.empty and 'df_perf_final' in locals():
-        ctx_carteira = df_perf_final[['Ativo', 'Qtd', 'Preço Médio', 'Preço Atual', 'Total Investido', 'Saldo Atual', 'Resultado (R$)', 'Total Div. (R$)', 'Evolução c/ Div']].to_csv(index=False, sep='|')
+        ctx_carteira = df_perf_final[['Ativo', 'Qtd', 'Preço Médio', 'Preço Atual', 'Total Investido', 'Saldo Atual', 'Resultado (R$)', 'Total Div. (R$)', 'Evolução c/ Div (%)']].to_csv(index=False, sep='|')
         
-    ctx_macro = (f"Selic Vigente Hoje: {selic_hoje:.2f}% | IPCA Acum. 12 meses: {ipca_12m_hoje:.2f}%\n"
-                 f"Projeções Selic Fim de Ano: {ano_atual}: {proj_focus.get(f'Selic_{ano_atual}')}% | {ano_atual+1}: {proj_focus.get(f'Selic_{ano_atual+1}')}% | {ano_atual+2}: {proj_focus.get(f'Selic_{ano_atual+2}')}%\n"
-                 f"Projeções IPCA Fim de Ano: {ano_atual}: {proj_focus.get(f'IPCA_{ano_atual}')}% | {ano_atual+1}: {proj_focus.get(f'IPCA_{ano_atual+1}')}% | {ano_atual+2}: {proj_focus.get(f'IPCA_{ano_atual+2}')}%")
+    ctx_macro = (f"Selic Vigente Hoje: {f_pct(selic_hoje)} | IPCA Acum. 12 meses: {f_pct(ipca_12m_hoje)}\n"
+                 f"Projeções Selic Fim de Ano: {ano_atual}: {f_pct(proj_focus.get(f'Selic_{ano_atual}'))} | {ano_atual+1}: {f_pct(proj_focus.get(f'Selic_{ano_atual+1}'))} | {ano_atual+2}: {f_pct(proj_focus.get(f'Selic_{ano_atual+2}'))}\n"
+                 f"Projeções IPCA Fim de Ano: {ano_atual}: {f_pct(proj_focus.get(f'IPCA_{ano_atual}'))} | {ano_atual+1}: {f_pct(proj_focus.get(f'IPCA_{ano_atual+1}'))} | {ano_atual+2}: {f_pct(proj_focus.get(f'IPCA_{ano_atual+2}'))}")
     
     sys_prompt = f"""
     Você é uma Analista de Investimentos Sênior (CNPI) e Gestora de Portfólio.
@@ -511,7 +549,7 @@ if prompt := st.chat_input("Ex: Com a Selic atual, como ajusto o meu Yield on Co
         except Exception as e:
             resposta = f"⚠️ Erro estrutural grave: {str(e)}"
     else:
-        resposta = "⚠️ Operação bloqueada. Insira a chave da API."
+        resposta = "⚠️ Operação bloqueada. Insira a chave da API do Gemini."
     
     st.session_state.historico_chat.append({"role": "assistant", "content": resposta})
     st.rerun()
