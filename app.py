@@ -28,7 +28,7 @@ if 'dados_mercado' not in st.session_state: st.session_state.dados_mercado = {}
 if 'df_simul' not in st.session_state: st.session_state.df_simul = pd.DataFrame()
 
 if 'historico_chat' not in st.session_state:
-    st.session_state.historico_chat = [{"role": "assistant", "content": "Saudações. Sou a sua analista sênior integrada. O terminal está mapeado em tempo real com o Focus e a sua carteira. Pode fazer a sua pergunta."}]
+    st.session_state.historico_chat = [{"role": "assistant", "content": "Saudações. Sou a sua analista sênior integrada. O terminal está mapeado em tempo real com o Focus (Curva de 3 anos) e a sua carteira. Pode fazer a sua pergunta."}]
 
 @st.cache_data(ttl=86400)
 def carregar_macro():
@@ -56,40 +56,56 @@ def obter_fundamentos_brasil():
         return fundamentos
     except: return {}
 
-# TAXA SPOT: Captura a Selic oficial exata de hoje
+# TAXA SPOT: Captura a Selic oficial e IPCA 12m atuais
 @st.cache_data(ttl=86400)
-def obter_taxa_selic_atual():
+def obter_macro_atual():
+    selic_atual = 10.50
+    ipca_12m = 4.00
     try:
         res = requests.get("https://brasilapi.com.br/api/taxas/v1", timeout=5)
         if res.status_code == 200:
-            taxas = res.json()
-            for taxa in taxas:
-                if taxa['nome'] == 'Selic':
-                    return float(taxa['valor'])
-    except:
-        pass
-    return 10.50
+            for taxa in res.json():
+                if taxa['nome'] == 'Selic': selic_atual = float(taxa['valor'])
+    except: pass
+    
+    try:
+        # A série 13522 do BCB representa o IPCA acumulado em 12 meses
+        ipca_df = sgs.get({'IPCA_12M': 13522}, last=1)
+        if not ipca_df.empty:
+            ipca_12m = float(ipca_df['IPCA_12M'].iloc[-1])
+    except: pass
+    
+    return selic_atual, ipca_12m
 
+# PROJEÇÕES DE 3 ANOS (FOCUS)
 @st.cache_data(ttl=86400)
 def obter_projecoes_focus():
     ano_atual = pd.Timestamp.now().year
-    selic_viva = obter_taxa_selic_atual()
-    fallback = {f"IPCA_{ano_atual}": 3.80, f"Selic_{ano_atual}": selic_viva, f"IPCA_{ano_atual+1}": 3.70, f"Selic_{ano_atual+1}": selic_viva - 1.0}
+    selic_atual, ipca_atual = obter_macro_atual()
+    
+    fallback = {
+        f"IPCA_{ano_atual}": 3.80, f"Selic_{ano_atual}": selic_atual, 
+        f"IPCA_{ano_atual+1}": 3.70, f"Selic_{ano_atual+1}": selic_atual - 1.0,
+        f"IPCA_{ano_atual+2}": 3.50, f"Selic_{ano_atual+2}": selic_atual - 1.5
+    }
     
     try:
-        url = "https://olinda.bcb.gov.br/olinda/servico/Expectativas/versao/v1/odata/ExpectativasMercadoAnuais?$top=100&$filter=Indicador%20eq%20'IPCA'%20or%20Indicador%20eq%20'Selic'&$orderby=Data%20desc&$format=json"
+        # Ampliamos para 300 resultados para garantir a captura dos 3 anos
+        url = "https://olinda.bcb.gov.br/olinda/servico/Expectativas/versao/v1/odata/ExpectativasMercadoAnuais?$top=300&$filter=Indicador%20eq%20'IPCA'%20or%20Indicador%20eq%20'Selic'&$orderby=Data%20desc&$format=json"
         res = requests.get(url, timeout=8).json()
         if 'value' in res and len(res['value']) > 0:
             df = pd.DataFrame(res['value'])
             data_recente = df['Data'].max()
             df = df[df['Data'] == data_recente]
-            df_atual = df[df['DataReferencia'] == str(ano_atual)]
-            df_prox = df[df['DataReferencia'] == str(ano_atual+1)]
             
-            if not df_atual[df_atual['Indicador'] == 'IPCA'].empty: fallback[f"IPCA_{ano_atual}"] = float(df_atual[df_atual['Indicador'] == 'IPCA']['Mediana'].values[0])
-            if not df_atual[df_atual['Indicador'] == 'Selic'].empty: fallback[f"Selic_{ano_atual}"] = float(df_atual[df_atual['Indicador'] == 'Selic']['Mediana'].values[0])
-            if not df_prox[df_prox['Indicador'] == 'IPCA'].empty: fallback[f"IPCA_{ano_atual+1}"] = float(df_prox[df_prox['Indicador'] == 'IPCA']['Mediana'].values[0])
-            if not df_prox[df_prox['Indicador'] == 'Selic'].empty: fallback[f"Selic_{ano_atual+1}"] = float(df_prox[df_prox['Indicador'] == 'Selic']['Mediana'].values[0])
+            for ano_offset in [0, 1, 2]:
+                ano_alvo = str(ano_atual + ano_offset)
+                df_ano = df[df['DataReferencia'] == ano_alvo]
+                
+                if not df_ano[df_ano['Indicador'] == 'IPCA'].empty: 
+                    fallback[f"IPCA_{ano_alvo}"] = float(df_ano[df_ano['Indicador'] == 'IPCA']['Mediana'].values[0])
+                if not df_ano[df_ano['Indicador'] == 'Selic'].empty: 
+                    fallback[f"Selic_{ano_alvo}"] = float(df_ano[df_ano['Indicador'] == 'Selic']['Mediana'].values[0])
         return fallback, ano_atual
     except: 
         return fallback, ano_atual
@@ -386,17 +402,20 @@ if not st.session_state.df_base.empty:
 
         with tab5:
             proj_focus, ano_atual = obter_projecoes_focus()
-            selic_hoje = obter_taxa_selic_atual()
+            selic_hoje, ipca_12m_hoje = obter_macro_atual()
             
-            st.markdown(f"### 🇧🇷 Cenário Macroeconômico")
+            st.markdown(f"### 🇧🇷 Conjuntura Macroeconômica")
             
-            # Painel isolado para a SELIC ATUAL
-            st.success(f"🎯 **SELIC VIGENTE HOJE:** {selic_hoje:.2f}% a.a.")
+            # Painéis Visuais Separados e Elegantes
+            c_mac1, c_mac2, c_mac3 = st.columns(3)
             
-            # Painel visual para as Projeções do Focus
-            st.markdown("##### 🔮 Projeções do Mercado (Boletim Focus para o fim do ano)")
-            st.info(f"**IPCA {ano_atual}:** {proj_focus.get(f'IPCA_{ano_atual}', 5.33)}%  |  **Selic {ano_atual}:** {proj_focus.get(f'Selic_{ano_atual}', 10.50)}%  ||  **IPCA {ano_atual+1}:** {proj_focus.get(f'IPCA_{ano_atual+1}', 4.15)}%  |  **Selic {ano_atual+1}:** {proj_focus.get(f'Selic_{ano_atual+1}', 9.50)}%")
+            c_mac1.success(f"🎯 **Cenário Atual (Vigente)**\n\nSelic Atual: **{selic_hoje:.2f}% a.a.**\n\nIPCA 12 meses: **{ipca_12m_hoje:.2f}%**")
             
+            c_mac2.info(f"🔮 **Selic Projetada (Focus)**\n\n{ano_atual}: **{proj_focus.get(f'Selic_{ano_atual}', 0):.2f}%**\n\n{ano_atual+1}: **{proj_focus.get(f'Selic_{ano_atual+1}', 0):.2f}%**\n\n{ano_atual+2}: **{proj_focus.get(f'Selic_{ano_atual+2}', 0):.2f}%**")
+            
+            c_mac3.info(f"🔮 **IPCA Projetado (Focus)**\n\n{ano_atual}: **{proj_focus.get(f'IPCA_{ano_atual}', 0):.2f}%**\n\n{ano_atual+1}: **{proj_focus.get(f'IPCA_{ano_atual+1}', 0):.2f}%**\n\n{ano_atual+2}: **{proj_focus.get(f'IPCA_{ano_atual+2}', 0):.2f}%**")
+            
+            st.write("---")
             st.markdown("### 🤖 Radar de Oportunidades do Especialista")
             
             c_p1, c_p2, c_p3, c_p4 = st.columns(4)
@@ -518,7 +537,7 @@ if not st.session_state.df_base.empty:
                             st.dataframe(df_custom, use_container_width=True, hide_index=True)
 
         # ==========================================
-        # ABA 7: TERMINAL DE IA COM LOG DE DEPURAÇÃO E AUTO-DISCOVERY
+        # ABA 7: TERMINAL DE IA COM CONTEXTO MACRO COMPLETO
         # ==========================================
         with tab7:
             st.markdown("### 🏢 Comitê de Alocação IA - Visão CNPI Sênior")
@@ -536,27 +555,31 @@ if not st.session_state.df_base.empty:
             for msg in st.session_state.historico_chat:
                 with st.chat_message(msg["role"]): st.write(msg["content"])
                 
-            if prompt := st.chat_input("Ex: Com a Selic a 10.50%, devo aumentar minha margem de Graham exigida?"):
+            if prompt := st.chat_input("Ex: Baseado nas projeções da Selic até 2028, qual a minha margem de segurança no portfólio?"):
                 st.session_state.historico_chat.append({"role": "user", "content": prompt})
                 with st.chat_message("user"): st.write(prompt)
                 
                 contexto_carteira = df_perf_final[['Ativo', 'Qtd', 'Preço Médio', 'Preço Atual', 'Total Investido', 'Saldo Atual', 'Resultado (R$)', 'Total Div. (R$)', 'Evolução c/ Div']].to_csv(index=False, sep='|')
-                contexto_macro = f"Selic Vigente Hoje: {selic_hoje:.2f}% | Projeção Selic {ano_atual}: {proj_focus.get(f'Selic_{ano_atual}', 10.50)}% | IPCA Esperado: {proj_focus.get(f'IPCA_{ano_atual}', 5.33)}%"
+                
+                # INJEÇÃO DA VISÃO COMPLETA PARA A IA
+                contexto_macro = (f"CENÁRIO MACROECONÔMICO (HOJE E CURVA FORWARD 3 ANOS):\n"
+                                  f"Selic Vigente Hoje: {selic_hoje:.2f}% | IPCA Acum. 12 meses: {ipca_12m_hoje:.2f}%\n"
+                                  f"Projeções Selic Fim de Ano: {ano_atual}: {proj_focus.get(f'Selic_{ano_atual}')}% | {ano_atual+1}: {proj_focus.get(f'Selic_{ano_atual+1}')}% | {ano_atual+2}: {proj_focus.get(f'Selic_{ano_atual+2}')}%\n"
+                                  f"Projeções IPCA Fim de Ano: {ano_atual}: {proj_focus.get(f'IPCA_{ano_atual}')}% | {ano_atual+1}: {proj_focus.get(f'IPCA_{ano_atual+1}')}% | {ano_atual+2}: {proj_focus.get(f'IPCA_{ano_atual+2}')}%")
                 
                 sys_prompt = f"""
                 Você é uma Analista de Investimentos Sênior (CNPI) e Gestora de Portfólio.
                 Sua linguagem é corporativa, executiva, fria, baseada em dados e voltada a relatórios de alta governança.
-                Você tem acesso irrestrito ao banco de dados da carteira do usuário e ao cenário macroeconômico do Banco Central.
+                Você tem acesso irrestrito ao banco de dados da carteira do usuário e à curva macroeconômica completa (Spot e Forward 3 Anos).
                 
                 [MATRIZ DE DADOS EM TEMPO REAL]
                 {contexto_carteira}
                 
-                [CENÁRIO MACRO FOCUS]
-                {contexto_macro}
+                [{contexto_macro}]
                 
                 [DIRETRIZES DE RESPOSTA]
-                - Não use linguagem de iniciante. Use termos técnicos apropriados (Duration, Risco Cauda, Assimetria).
-                - Cruze os dados para fornecer números exatos na sua resposta.
+                - Não use linguagem de iniciante. Use termos técnicos apropriados (Duration, Risco Cauda, Assimetria, Yield Curve).
+                - Cruze os dados da carteira com as projeções longas de Selic/IPCA para fornecer números exatos na sua resposta.
                 """
                 
                 if api_key:
@@ -581,7 +604,7 @@ if not st.session_state.df_base.empty:
                                     
                         if not resposta_sucesso:
                             erro_formatado = "\n".join(erros_tecnicos)
-                            resposta = f"⚠️ **Diagnóstico de Rede Sênior:** Falha de comunicação. Nenhum dos motores atualizados respondeu. Verifique se o Streamlit Cloud tem permissões de rede de saída ou valide as quotas no AI Studio.\n\n**Logs Técnicos:**\n`{erro_formatado}`"
+                            resposta = f"⚠️ **Diagnóstico de Rede Sênior:** Falha de comunicação com a IA. Valide as permissões de quota no AI Studio.\n\n**Logs Técnicos:**\n`{erro_formatado}`"
                             
                     except ImportError:
                         resposta = "⚠️ **AÇÃO NECESSÁRIA:** A biblioteca do Google não foi carregada. Vá ao painel do Streamlit Cloud, clique nos 3 pontinhos (⋮) no menu superior direito e escolha 'Reboot app'."
