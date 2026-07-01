@@ -65,7 +65,6 @@ def autenticar_usuario(username, password):
     conn.close()
     return user is not None
 
-# NOVO: Função para redefinir a senha caso o usuário exista
 def atualizar_senha(username, nova_senha):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
@@ -108,7 +107,6 @@ if not st.session_state.logged_in:
     
     col_log1, col_log2, col_log3 = st.columns([1, 1, 1])
     with col_log2:
-        # ATUALIZADO: Inclusão da aba "Esqueci a Senha"
         tab_login, tab_register, tab_forgot = st.tabs(["Acesso", "Novo Registro", "Esqueci a Senha"])
         
         with tab_login:
@@ -131,7 +129,6 @@ if not st.session_state.logged_in:
                     else: st.error("Nome de usuário já existe.")
                 else: st.warning("Preencha ambos os campos.")
                 
-        # NOVO: Interface da aba de recuperação de senha
         with tab_forgot:
             st.markdown("<p style='font-size: 14px; color: gray;'>Informe seu usuário cadastrado e a nova senha desejada.</p>", unsafe_allow_html=True)
             forgot_user = st.text_input("Confirmar Usuário", key="forgot_user")
@@ -247,32 +244,72 @@ def consolidar_carteira(df):
         linhas.append({"Ativo": ativo, "Quantidade": qtd, "Preço Médio": float(pm), "Data Média": pd.to_datetime(soma_tempo/qtd, unit='s').date() if qtd>0 else pd.Timestamp.now().date()})
     return pd.DataFrame(linhas)
 
+# ==========================================
+# FUNÇÃO NOVA: SCANNER DE CABEÇALHO B3
+# ==========================================
+def corrigir_cabecalho_b3(df):
+    if df.empty: return df
+    
+    # Se o Pandas já tiver achado corretamente, devolve do jeito que está
+    if 'Data do Negócio' in df.columns or 'Data Média' in df.columns: 
+        return df
+        
+    # Varre as 15 primeiras linhas atrás do cabeçalho real escondido
+    for i in range(min(15, len(df))):
+        linha = df.iloc[i].astype(str).str.strip().tolist()
+        
+        # Padrão Extrato de Negociação
+        if 'Data do Negócio' in linha and 'Código de Negociação' in linha:
+            df.columns = linha
+            return df.iloc[i+1:].reset_index(drop=True)
+            
+        # Padrão Extrato de Movimentação (outra aba do CEI/B3)
+        elif 'Data' in linha and ('Produto' in linha or 'Código de Negociação' in linha):
+            df.columns = linha
+            df = df.iloc[i+1:].reset_index(drop=True)
+            return df.rename(columns={
+                "Data": "Data do Negócio", 
+                "Produto": "Código de Negociação", 
+                "Movimentação": "Tipo de Movimentação", 
+                "Valor da Operação": "Valor"
+            })
+            
+    return df
+
 def processar_planilha_b3(df):
     if df.empty: return pd.DataFrame()
+    
+    # Assegurar que a Data do Negócio tem o formato correto
     df['Data do Negócio'] = pd.to_datetime(df['Data do Negócio'], dayfirst=True, errors='coerce')
     df['Quantidade'], df['Valor'] = df['Quantidade'].apply(limpar_numero), df['Valor'].apply(limpar_numero)
     df = df.sort_values('Data do Negócio')
+    
     posicoes = {}
     for _, row in df.iterrows():
         if pd.isna(row['Código de Negociação']): continue
         ticker = str(row['Código de Negociação']).strip().upper()
         ticker = MAPEAMENTO_TICKERS.get(ticker[:-1] if ticker.endswith('F') else ticker, ticker[:-1] if ticker.endswith('F') else ticker)
         if re.match(r'^[A-Z]{4}[A-Z]\d+', ticker) and not ticker.endswith(('11','34','39')) and len(ticker)>=6: continue
+        
         qtd, valor, data = row['Quantidade'], row['Valor'], row['Data do Negócio'] if pd.notna(row['Data do Negócio']) else pd.Timestamp.now()
         if ticker not in posicoes: posicoes[ticker] = {'qtd': 0.0, 'valor': 0.0, 'ts_medio': 0.0}
         
-        if row['Tipo de Movimentação'] == 'Compra':
+        # Aceitamos "Compra", "C" ou outras variações (útil caso subam planilhas ligeiramente diferentes)
+        tipo_mov = str(row['Tipo de Movimentação']).strip().upper()
+        
+        if 'COMPRA' in tipo_mov or tipo_mov == 'C':
             q_ant, ts_ant = posicoes[ticker]['qtd'], posicoes[ticker]['ts_medio']
             ts_novo = pd.Timestamp(data).timestamp()
             posicoes[ticker]['ts_medio'] = ts_novo if q_ant == 0 else ((ts_ant * q_ant) + (ts_novo * qtd)) / (q_ant + qtd)
             posicoes[ticker]['qtd'] += qtd
             posicoes[ticker]['valor'] += valor
-        elif row['Tipo de Movimentação'] == 'Venda':
+        elif 'VENDA' in tipo_mov or tipo_mov == 'V':
             if qtd >= (posicoes[ticker]['qtd'] - 0.001): posicoes[ticker] = {'qtd': 0.0, 'valor': 0.0, 'ts_medio': 0.0}
             else:
                 pm = posicoes[ticker]['valor'] / posicoes[ticker]['qtd'] if posicoes[ticker]['qtd'] > 0 else 0
                 posicoes[ticker]['qtd'] -= qtd
                 posicoes[ticker]['valor'] -= (qtd * pm)
+                
     ativos = [{"Ativo": t, "Quantidade": d['qtd'], "Preço Médio": d['valor']/d['qtd'] if d['qtd']>0 else 0, "Data Média": pd.to_datetime(d['ts_medio'], unit='s').date()} for t, d in posicoes.items() if d['qtd']>0]
     return consolidar_carteira(pd.DataFrame(ativos))
 
@@ -306,25 +343,35 @@ data_corte = st.sidebar.date_input("Filtrar a partir de:", pd.Timestamp.now().da
 
 if st.sidebar.button("🚀 Processar", use_container_width=True):
     base_atual = st.session_state.df_base.copy()
+    
     if arquivo_principal:
         txt = arquivo_principal.getvalue().decode('utf-8-sig', errors='ignore') if arquivo_principal.name.endswith('.csv') else None
         df_p = pd.read_csv(io.StringIO(txt), sep=';' if txt and ';' in txt else ',') if txt else pd.read_excel(arquivo_principal)
+        
+        # ATIVANDO O NOVO SCANNER B3 AQUI
+        df_p = corrigir_cabecalho_b3(df_p)
         
         if 'Data Média' in df_p.columns:
             base_atual = consolidar_carteira(df_p)
         elif 'Data do Negócio' in df_p.columns:
             base_atual = processar_planilha_b3(df_p)
         else:
-            st.sidebar.error("Formato de planilha inválido. Use o backup do sistema ou o extrato padrão da B3.")
+            st.sidebar.error("Formato de planilha inválido. Não encontramos as colunas padronizadas da B3.")
             st.stop()
             
     if arquivo_novo and not base_atual.empty:
         txt_n = arquivo_novo.getvalue().decode('utf-8-sig', errors='ignore') if arquivo_novo.name.endswith('.csv') else None
-        df_n = pd.read_csv(io.StringIO(txt_n), sep=';' if ';' in txt_n else ',') if txt_n else pd.read_excel(arquivo_novo)
-        df_n['Data do Negócio'] = pd.to_datetime(df_n['Data do Negócio'], dayfirst=True, errors='coerce')
-        df_n = df_n[df_n['Data do Negócio'].dt.date >= data_corte]
-        linhas_b = [{"Código de Negociação": r['Ativo'], "Tipo de Movimentação": "Compra", "Data do Negócio": pd.to_datetime(r['Data Média']), "Quantidade": r['Quantidade'], "Valor": r['Quantidade']*r['Preço Médio']} for _, r in base_atual.iterrows()]
-        base_atual = processar_planilha_b3(pd.concat([pd.DataFrame(linhas_b), df_n], ignore_index=True))
+        df_n = pd.read_csv(io.StringIO(txt_n), sep=';' if txt_n and ';' in txt_n else ',') if txt_n else pd.read_excel(arquivo_novo)
+        
+        # ATIVANDO O NOVO SCANNER B3 AQUI TAMBÉM
+        df_n = corrigir_cabecalho_b3(df_n)
+        
+        if not df_n.empty and 'Data do Negócio' in df_n.columns:
+            df_n['Data do Negócio'] = pd.to_datetime(df_n['Data do Negócio'], dayfirst=True, errors='coerce')
+            df_n = df_n[df_n['Data do Negócio'].dt.date >= data_corte]
+            linhas_b = [{"Código de Negociação": r['Ativo'], "Tipo de Movimentação": "Compra", "Data do Negócio": pd.to_datetime(r['Data Média']), "Quantidade": r['Quantidade'], "Valor": r['Quantidade']*r['Preço Médio']} for _, r in base_atual.iterrows()]
+            base_atual = processar_planilha_b3(pd.concat([pd.DataFrame(linhas_b), df_n], ignore_index=True))
+            
     st.session_state.df_base = base_atual
     st.sidebar.warning("Memória atualizada. Salve no DB para manter.")
     st.rerun()
