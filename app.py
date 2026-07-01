@@ -245,65 +245,90 @@ def consolidar_carteira(df):
     return pd.DataFrame(linhas)
 
 # ==========================================
-# FUNÇÃO NOVA: SCANNER DE CABEÇALHO B3
+# MOTOR DE DETECÇÃO ADAPTATIVO B3
 # ==========================================
 def corrigir_cabecalho_b3(df):
     if df.empty: return df
     
-    # Se o Pandas já tiver achado corretamente, devolve do jeito que está
     if 'Data do Negócio' in df.columns or 'Data Média' in df.columns: 
         return df
         
-    # Varre as 15 primeiras linhas atrás do cabeçalho real escondido
-    for i in range(min(15, len(df))):
-        linha = df.iloc[i].astype(str).str.strip().tolist()
+    for i in range(min(20, len(df))):
+        linha = df.iloc[i].astype(str).str.strip().str.upper().tolist()
         
-        # Padrão Extrato de Negociação
-        if 'Data do Negócio' in linha and 'Código de Negociação' in linha:
-            df.columns = linha
+        # Padrão 1: Extrato de Negociação B3
+        if any('DATA DO NEGÓCIO' in col or 'DATA DO NEGOCIO' in col for col in linha):
+            df.columns = df.iloc[i].astype(str).str.strip().tolist()
             return df.iloc[i+1:].reset_index(drop=True)
             
-        # Padrão Extrato de Movimentação (outra aba do CEI/B3)
-        elif 'Data' in linha and ('Produto' in linha or 'Código de Negociação' in linha):
-            df.columns = linha
+        # Padrão 2: Extrato de Movimentação Histórica B3
+        elif any('PRODUTO' in col for col in linha) and any('MOVIMENTAÇÃO' in col or 'MOVIMENTACAO' in col for col in linha):
+            df.columns = df.iloc[i].astype(str).str.strip().tolist()
             df = df.iloc[i+1:].reset_index(drop=True)
-            return df.rename(columns={
-                "Data": "Data do Negócio", 
-                "Produto": "Código de Negociação", 
-                "Movimentação": "Tipo de Movimentação", 
-                "Valor da Operação": "Valor"
-            })
             
+            # Normalização de colunas para adequar ao motor do sistema
+            mapeamento = {}
+            for col in df.columns:
+                col_upper = str(col).strip().upper()
+                if 'DATA' in col_upper: mapeamento[col] = 'Data do Negócio'
+                elif 'PRODUTO' in col_upper: mapeamento[col] = 'Código de Negociação'
+                elif 'MOVIMENTAÇÃO' in col_upper or 'MOVIMENTACAO' in col_upper: mapeamento[col] = 'Tipo de Movimentação'
+                elif 'VALOR' in col_upper: mapeamento[col] = 'Valor'
+                elif 'QUANTIDADE' in col_upper: mapeamento[col] = 'Quantidade'
+                elif 'PREÇO' in col_upper or 'PRECO' in col_upper: mapeamento[col] = 'Preço Unitário'
+                
+            df = df.rename(columns=mapeamento)
+            
+            # Se a coluna de valor total calculada pela B3 não vier preenchida, calcula internamente
+            if 'Valor' not in df.columns and 'Preço Unitário' in df.columns:
+                df['Valor'] = df['Quantidade'].apply(limpar_numero) * df['Preço Unitário'].apply(limpar_numero)
+                
+            return df
     return df
 
 def processar_planilha_b3(df):
     if df.empty: return pd.DataFrame()
     
-    # Assegurar que a Data do Negócio tem o formato correto
     df['Data do Negócio'] = pd.to_datetime(df['Data do Negócio'], dayfirst=True, errors='coerce')
-    df['Quantidade'], df['Valor'] = df['Quantidade'].apply(limpar_numero), df['Valor'].apply(limpar_numero)
+    df['Quantidade'] = df['Quantidade'].apply(limpar_numero)
+    
+    # Se não houver coluna Valor mapeada, tenta utilizar o preço unitário multiplicado
+    if 'Valor' in df.columns:
+        df['Valor'] = df['Valor'].apply(limpar_numero)
+    elif 'Preço Unitário' in df.columns:
+        df['Valor'] = df['Quantidade'] * df['Preço Unitário'].apply(limpar_numero)
+    else:
+        df['Valor'] = 0.0
+
     df = df.sort_values('Data do Negócio')
     
     posicoes = {}
     for _, row in df.iterrows():
         if pd.isna(row['Código de Negociação']): continue
-        ticker = str(row['Código de Negociação']).strip().upper()
-        ticker = MAPEAMENTO_TICKERS.get(ticker[:-1] if ticker.endswith('F') else ticker, ticker[:-1] if ticker.endswith('F') else ticker)
+        
+        ticker_raw = str(row['Código de Negociação']).strip().upper()
+        
+        # Tratamento para limpar descrições longas como "BBAS3 - BANCO DO BRASIL S.A."
+        if " - " in ticker_raw:
+            ticker_raw = ticker_raw.split(" - ")[0].strip()
+            
+        ticker = MAPEAMENTO_TICKERS.get(ticker_raw[:-1] if ticker_raw.endswith('F') and len(ticker_raw) > 4 else ticker_raw, ticker_raw[:-1] if ticker_raw.endswith('F') and len(ticker_raw) > 4 else ticker_raw)
         if re.match(r'^[A-Z]{4}[A-Z]\d+', ticker) and not ticker.endswith(('11','34','39')) and len(ticker)>=6: continue
         
         qtd, valor, data = row['Quantidade'], row['Valor'], row['Data do Negócio'] if pd.notna(row['Data do Negócio']) else pd.Timestamp.now()
         if ticker not in posicoes: posicoes[ticker] = {'qtd': 0.0, 'valor': 0.0, 'ts_medio': 0.0}
         
-        # Aceitamos "Compra", "C" ou outras variações (útil caso subam planilhas ligeiramente diferentes)
         tipo_mov = str(row['Tipo de Movimentação']).strip().upper()
         
-        if 'COMPRA' in tipo_mov or tipo_mov == 'C':
+        # Mapeamento estendido: Aceita formatos de Negociação (Compra) e de Movimentação (Credito)
+        if any(term in tipo_mov for term in ['COMPRA', 'CREDITO', 'CRÉDITO']) or tipo_mov == 'C':
             q_ant, ts_ant = posicoes[ticker]['qtd'], posicoes[ticker]['ts_medio']
             ts_novo = pd.Timestamp(data).timestamp()
             posicoes[ticker]['ts_medio'] = ts_novo if q_ant == 0 else ((ts_ant * q_ant) + (ts_novo * qtd)) / (q_ant + qtd)
             posicoes[ticker]['qtd'] += qtd
             posicoes[ticker]['valor'] += valor
-        elif 'VENDA' in tipo_mov or tipo_mov == 'V':
+        # Mapeamento estendido: Aceita formatos de Negociação (Venda) e de Movimentação (Debito)
+        elif any(term in tipo_mov for term in ['VENDA', 'DEBITO', 'DÉBITO']) or tipo_mov == 'V':
             if qtd >= (posicoes[ticker]['qtd'] - 0.001): posicoes[ticker] = {'qtd': 0.0, 'valor': 0.0, 'ts_medio': 0.0}
             else:
                 pm = posicoes[ticker]['valor'] / posicoes[ticker]['qtd'] if posicoes[ticker]['qtd'] > 0 else 0
@@ -348,7 +373,6 @@ if st.sidebar.button("🚀 Processar", use_container_width=True):
         txt = arquivo_principal.getvalue().decode('utf-8-sig', errors='ignore') if arquivo_principal.name.endswith('.csv') else None
         df_p = pd.read_csv(io.StringIO(txt), sep=';' if txt and ';' in txt else ',') if txt else pd.read_excel(arquivo_principal)
         
-        # ATIVANDO O NOVO SCANNER B3 AQUI
         df_p = corrigir_cabecalho_b3(df_p)
         
         if 'Data Média' in df_p.columns:
@@ -356,14 +380,13 @@ if st.sidebar.button("🚀 Processar", use_container_width=True):
         elif 'Data do Negócio' in df_p.columns:
             base_atual = processar_planilha_b3(df_p)
         else:
-            st.sidebar.error("Formato de planilha inválido. Não encontramos as colunas padronizadas da B3.")
+            st.sidebar.error("Formato de planilha inválido. Não encontramos as colunas padronizadas da B3 ou do Sistema.")
             st.stop()
             
     if arquivo_novo and not base_atual.empty:
         txt_n = arquivo_novo.getvalue().decode('utf-8-sig', errors='ignore') if arquivo_novo.name.endswith('.csv') else None
         df_n = pd.read_csv(io.StringIO(txt_n), sep=';' if txt_n and ';' in txt_n else ',') if txt_n else pd.read_excel(arquivo_novo)
         
-        # ATIVANDO O NOVO SCANNER B3 AQUI TAMBÉM
         df_n = corrigir_cabecalho_b3(df_n)
         
         if not df_n.empty and 'Data do Negócio' in df_n.columns:
@@ -373,7 +396,7 @@ if st.sidebar.button("🚀 Processar", use_container_width=True):
             base_atual = processar_planilha_b3(pd.concat([pd.DataFrame(linhas_b), df_n], ignore_index=True))
             
     st.session_state.df_base = base_atual
-    st.sidebar.warning("Memória atualizada. Salve no DB para manter.")
+    st.sidebar.warning("Memória updated. Salve no DB para manter.")
     st.rerun()
 
 # ==========================================
@@ -421,7 +444,7 @@ if not st.session_state.df_base.empty:
         st.session_state.df_base = consolidar_carteira(df_editado) 
         df_macro, fundamentos_br = carregar_macro(), obter_fundamentos_brasil()
         progresso, total = st.progress(0), len(st.session_state.df_base)
-        dados_mercado, linhas_simul_iniciais = {}, []
+        dados_mercado, lines_simul_iniciais = {}, []
 
         for i, row in st.session_state.df_base.iterrows():
             ticker, data_compra = str(row['Ativo']).strip().upper(), pd.to_datetime(row['Data Média']) if pd.notna(row['Data Média']) else pd.Timestamp.now()
@@ -449,11 +472,11 @@ if not st.session_state.df_base.empty:
             cdi, ipca = calcular_macro_acumulado(df_macro, data_compra)
             
             dados_mercado[ticker] = {"Qtd": float(row['Quantidade']), "PM": float(row['Preço Médio']), "Data": data_compra, "Preço Atual": preco_atual, "Div_Total": divs_total, "CDI": cdi, "IPCA": ipca, "Setor": setor, "Tipo": tipo_ativo}
-            linhas_simul_iniciais.append({"Ativo": ticker, "Cotação Atual": preco_atual, "VPA (Contábil)": vpa, "LPA Projetado": lpa, "Div. Projetado (R$)": divs_12m})
+            lines_simul_iniciais.append({"Ativo": ticker, "Cotação Atual": preco_atual, "VPA (Contábil)": vpa, "LPA Projetado": lpa, "Div. Projetado (R$)": divs_12m})
             progresso.progress((i + 1) / total)
             
         st.session_state.dados_mercado = dados_mercado
-        st.session_state.df_simul = pd.DataFrame(linhas_simul_iniciais)
+        st.session_state.df_simul = pd.DataFrame(lines_simul_iniciais)
         st.success("Sincronizado!")
 
 # ==========================================
