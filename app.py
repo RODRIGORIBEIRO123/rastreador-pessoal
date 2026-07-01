@@ -302,8 +302,8 @@ c_m1, c_m2 = st.columns([1, 2])
 c_m1.success(f"🎯 **Cenário Atual (Vigente)**\n\nSelic Atual: **{f_pct(selic_hoje)} a.a.**\n\nIPCA 12 meses: **{f_pct(ipca_12m_hoje)}**")
 c_m2.info(
     f"🔮 **Projeções do Mercado (Focus)**\n\n"
-    f"**Selic:** {ano_atual}: **{f_pct(proj_focus.get(f'Selic_{ano_atual}', 0))}**  |  {ano_atual+1}: **{f_pct(proj_focus.get(f'Selic_{ano_atual+1}', 0))}**  |  {ano_atual+2}: **{f_pct(proj_focus.get(f'Selic_{ano_atual+2}', 0))}**\n\n"
-    f"**IPCA:** {ano_atual}: **{f_pct(proj_focus.get(f'IPCA_{ano_atual}', 0))}**  |  {ano_atual+1}: **{f_pct(proj_focus.get(f'IPCA_{ano_atual+1}', 0))}**  |  {ano_atual+2}: **{f_pct(proj_focus.get(f'IPCA_{ano_atual+2}', 0))}**"
+    f"**Selic:** {ano_atual}: **{f_pct(proj_focus.get(f'Selic_{ano_atual}', 0))}** |  {ano_atual+1}: **{f_pct(proj_focus.get(f'Selic_{ano_atual+1}', 0))}** |  {ano_atual+2}: **{f_pct(proj_focus.get(f'Selic_{ano_atual+2}', 0))}**\n\n"
+    f"**IPCA:** {ano_atual}: **{f_pct(proj_focus.get(f'IPCA_{ano_atual}', 0))}** |  {ano_atual+1}: **{f_pct(proj_focus.get(f'IPCA_{ano_atual+1}', 0))}** |  {ano_atual+2}: **{f_pct(proj_focus.get(f'IPCA_{ano_atual+2}', 0))}**"
 )
 st.write("---")
 
@@ -421,7 +421,7 @@ if not st.session_state.df_base.empty:
             st.session_state.df_recs_val = pd.DataFrame(recs_val)
             st.dataframe(st.session_state.df_recs_val.style.format({"Teto Bazin": f_brl, "Justo Graham": f_brl, "Margem Bazin (%)": f_pct, "Margem Graham (%)": f_pct}), use_container_width=True, hide_index=True)
 
-        with t3: # Radar e Bola de Neve Restaurados!
+        with t3: 
             c_p1, c_p2, c_p3, c_p4 = st.columns(4)
             patr_fora = c_p1.number_input("Patrimônio Fora (R$):", value=0.0, step=1000.0)
             aporte = c_p2.number_input("Aporte Mensal (R$):", value=2000.0, step=500.0)
@@ -457,10 +457,30 @@ if not st.session_state.df_base.empty:
             st.plotly_chart(fig_proj, use_container_width=True)
 
         with t4:
-            st.markdown("#### Gráficos da Carteira")
+            st.markdown("#### Gráficos da Distribuição")
             c_g1, c_g2 = st.columns(2)
             c_g1.plotly_chart(px.pie(df_perf_final, values='Saldo Atual', names='Ativo', title="Por Ativo"), use_container_width=True)
             c_g2.plotly_chart(px.pie(df_perf_final, values='Saldo Atual', names='Setor', title="Por Setor"), use_container_width=True)
+            
+            st.markdown("#### 📊 Rentabilidade: Ativos vs Benchmarks (CDI e IPCA)")
+            st.markdown("Comparativo do Ganho Real e Nominal desde a aquisição de cada ativo.")
+            
+            # Preparação dos dados para o Gráfico Restaurado
+            df_comp = df_perf_final[['Ativo', 'Evolução c/ Div (%)', 'CDI Acum. (%)', 'IPCA Acum. (%)']].copy()
+            df_comp = df_comp.rename(columns={'Evolução c/ Div (%)': 'Carteira (c/ Div)', 'CDI Acum. (%)': 'CDI', 'IPCA Acum. (%)': 'IPCA'})
+            df_melt = df_comp.melt(id_vars='Ativo', var_name='Indicador', value_name='Rentabilidade (%)')
+            
+            fig_comp = px.bar(
+                df_melt, 
+                x='Ativo', 
+                y='Rentabilidade (%)', 
+                color='Indicador', 
+                barmode='group',
+                color_discrete_map={'Carteira (c/ Div)': '#1f77b4', 'CDI': '#ff7f0e', 'IPCA': '#2ca02c'},
+                title="Rentabilidade Acumulada por Ativo vs Indexadores"
+            )
+            fig_comp.update_layout(xaxis_title="Ativo", yaxis_title="Rentabilidade Acumulada (%)", legend_title="Indicador")
+            st.plotly_chart(fig_comp, use_container_width=True)
 
         with t5:
             st.markdown("### 💸 Proventos (Mensais e Exportação)")
