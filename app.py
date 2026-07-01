@@ -65,6 +65,20 @@ def autenticar_usuario(username, password):
     conn.close()
     return user is not None
 
+# NOVO: Função para redefinir a senha caso o usuário exista
+def atualizar_senha(username, nova_senha):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("SELECT * FROM usuarios WHERE username=?", (username,))
+    user = c.fetchone()
+    if user is None:
+        conn.close()
+        return False
+    c.execute("UPDATE usuarios SET password=? WHERE username=?", (hash_password(nova_senha), username))
+    conn.commit()
+    conn.close()
+    return True
+
 def salvar_carteira_db(username, df):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
@@ -94,7 +108,9 @@ if not st.session_state.logged_in:
     
     col_log1, col_log2, col_log3 = st.columns([1, 1, 1])
     with col_log2:
-        tab_login, tab_register = st.tabs(["Acesso", "Novo Registro"])
+        # ATUALIZADO: Inclusão da aba "Esqueci a Senha"
+        tab_login, tab_register, tab_forgot = st.tabs(["Acesso", "Novo Registro", "Esqueci a Senha"])
+        
         with tab_login:
             login_user = st.text_input("Usuário", key="log_user")
             login_pass = st.text_input("Senha", type="password", key="log_pass")
@@ -105,6 +121,7 @@ if not st.session_state.logged_in:
                     st.session_state.df_base = carregar_carteira_db(login_user)
                     st.rerun()
                 else: st.error("Credenciais inválidas.")
+                
         with tab_register:
             reg_user = st.text_input("Novo Usuário", key="reg_user")
             reg_pass = st.text_input("Nova Senha", type="password", key="reg_pass")
@@ -113,6 +130,19 @@ if not st.session_state.logged_in:
                     if registrar_usuario(reg_user, reg_pass): st.success("Conta criada! Pode fazer o login.")
                     else: st.error("Nome de usuário já existe.")
                 else: st.warning("Preencha ambos os campos.")
+                
+        # NOVO: Interface da aba de recuperação de senha
+        with tab_forgot:
+            st.markdown("<p style='font-size: 14px; color: gray;'>Informe seu usuário cadastrado e a nova senha desejada.</p>", unsafe_allow_html=True)
+            forgot_user = st.text_input("Confirmar Usuário", key="forgot_user")
+            forgot_pass = st.text_input("Nova Senha", type="password", key="forgot_pass")
+            if st.button("Redefinir Senha", use_container_width=True):
+                if forgot_user and forgot_pass:
+                    if atualizar_senha(forgot_user, forgot_pass):
+                        st.success("Senha redefinida com sucesso! Volte na aba 'Acesso' para entrar.")
+                    else: st.error("Usuário não encontrado no sistema.")
+                else: st.warning("Preencha ambos os campos.")
+                
     st.stop()
 
 # ==========================================
@@ -280,7 +310,6 @@ if st.sidebar.button("🚀 Processar", use_container_width=True):
         txt = arquivo_principal.getvalue().decode('utf-8-sig', errors='ignore') if arquivo_principal.name.endswith('.csv') else None
         df_p = pd.read_csv(io.StringIO(txt), sep=';' if txt and ';' in txt else ',') if txt else pd.read_excel(arquivo_principal)
         
-        # VALIDAÇÃO DE COLUNAS RESTAURADA PARA EVITAR KEYERROR
         if 'Data Média' in df_p.columns:
             base_atual = consolidar_carteira(df_p)
         elif 'Data do Negócio' in df_p.columns:
@@ -474,7 +503,6 @@ if not st.session_state.df_base.empty:
             st.markdown("#### 📊 Rentabilidade: Ativos vs Benchmarks (CDI e IPCA)")
             st.markdown("Comparativo do Ganho Real e Nominal desde a aquisição de cada ativo.")
             
-            # Preparação dos dados para o Gráfico Restaurado
             df_comp = df_perf_final[['Ativo', 'Evolução c/ Div (%)', 'CDI Acum. (%)', 'IPCA Acum. (%)']].copy()
             df_comp = df_comp.rename(columns={'Evolução c/ Div (%)': 'Carteira (c/ Div)', 'CDI Acum. (%)': 'CDI', 'IPCA Acum. (%)': 'IPCA'})
             df_melt = df_comp.melt(id_vars='Ativo', var_name='Indicador', value_name='Rentabilidade (%)')
