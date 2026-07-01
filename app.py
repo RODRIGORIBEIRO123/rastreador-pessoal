@@ -278,8 +278,17 @@ if st.sidebar.button("🚀 Processar", use_container_width=True):
     base_atual = st.session_state.df_base.copy()
     if arquivo_principal:
         txt = arquivo_principal.getvalue().decode('utf-8-sig', errors='ignore') if arquivo_principal.name.endswith('.csv') else None
-        df_p = pd.read_csv(io.StringIO(txt), sep=';' if ';' in txt else ',') if txt else pd.read_excel(arquivo_principal)
-        base_atual = consolidar_carteira(df_p) if 'Data Média' in df_p.columns else processar_planilha_b3(df_p)
+        df_p = pd.read_csv(io.StringIO(txt), sep=';' if txt and ';' in txt else ',') if txt else pd.read_excel(arquivo_principal)
+        
+        # VALIDAÇÃO DE COLUNAS RESTAURADA PARA EVITAR KEYERROR
+        if 'Data Média' in df_p.columns:
+            base_atual = consolidar_carteira(df_p)
+        elif 'Data do Negócio' in df_p.columns:
+            base_atual = processar_planilha_b3(df_p)
+        else:
+            st.sidebar.error("Formato de planilha inválido. Use o backup do sistema ou o extrato padrão da B3.")
+            st.stop()
+            
     if arquivo_novo and not base_atual.empty:
         txt_n = arquivo_novo.getvalue().decode('utf-8-sig', errors='ignore') if arquivo_novo.name.endswith('.csv') else None
         df_n = pd.read_csv(io.StringIO(txt_n), sep=';' if ';' in txt_n else ',') if txt_n else pd.read_excel(arquivo_novo)
@@ -372,7 +381,7 @@ if not st.session_state.df_base.empty:
         st.success("Sincronizado!")
 
 # ==========================================
-# 8. DASHBOARD E RELATÓRIOS (Restaurados)
+# 8. DASHBOARD E RELATÓRIOS
 # ==========================================
     if st.session_state.dados_mercado:
         linhas_perf = []
@@ -515,7 +524,6 @@ if not st.session_state.df_base.empty:
                 st.dataframe(df_d.style.format({"Unitário (R$)": f_brl_4, "Recebido (R$)": f_brl, "Yield on Cost (%)": f_pct, "DY Atual (%)": f_pct}), use_container_width=True, hide_index=True)
                 st.success(f"**Total {meses_map[st.session_state.divs_m]}/{st.session_state.divs_a}:** {f_brl(df_d['Recebido (R$)'].sum())}")
                 
-                # NOVO: Botão de Download Excel de Proventos
                 xls = to_excel(df_d, sheet_name=f"Proventos_{meses_map[st.session_state.divs_m]}")
                 st.download_button(label="📥 Baixar Relatório de Proventos (Excel)", data=xls, file_name=f"Proventos_{st.session_state.username}_{meses_map[st.session_state.divs_m]}_{st.session_state.divs_a}.xlsx", mime="application/vnd.ms-excel", use_container_width=True)
             elif df_d is not None: st.info("Sem proventos no período selecionado.")
