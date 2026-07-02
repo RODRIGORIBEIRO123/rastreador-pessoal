@@ -450,7 +450,7 @@ if st.sidebar.button("🚀 Processar", use_container_width=True):
         if not df_n.empty and 'Data do Negócio' in df_n.columns:
             df_n['Data do Negócio'] = pd.to_datetime(df_n['Data do Negócio'], dayfirst=True, errors='coerce')
             df_n = df_n[df_n['Data do Negócio'].dt.date >= data_corte]
-            linhas_b = [{"Código de Negociação": r['Ativo'], "Tipo de Movimentação": "Compra", "Data do Negócio": pd.to_datetime(r['Data Média']), "Quantidade": r['Quantidade'], "Valor": r['Quantidade']*r['Preço Médio']} for _, r in base_atual.iterrows()]
+            linhas_b = [{"Código de Negociação": r['Ativo'], "Tipo de Movimentação": "Compra", "Data do Negócio": pd.to_datetime(r['Data Média']), "Quantidade": r['Quantidade'], "Valor": r['Quantidade']*r['Preço Médio']} for _, r in base_atual.iterrowsiterrows()]
             base_atual = processar_planilha_b3(pd.concat([pd.DataFrame(linhas_b), df_n], ignore_index=True))
             
     st.session_state.df_base = base_atual
@@ -612,6 +612,7 @@ if not st.session_state.df_base.empty:
             st.markdown("##### Parametrização do Radar Operacional")
             c_p1, c_p2, c_p3, c_p4 = st.columns(4)
             patr_fora = c_p1.number_input("Patrimônio Externo (R$):", value=0.0, step=1000.0, help="Capital fora de custódia pronto para aporte.")
+            
             aporte = c_p2.number_input("Aporte Mensal Previsto (R$):", value=2000.0, step=500.0, help="Valor líquido direcionado a novos investimentos mensais.")
             rent = c_p3.number_input("Rentabilidade Mensal Alvo (%):", value=0.8, step=0.1) / 100.0
             cresc_div = c_p4.number_input("Crescimento Anual de Dividendos (%):", value=5.0, step=1.0) / 100.0
@@ -658,7 +659,7 @@ if not st.session_state.df_base.empty:
             
             for m in range(13):
                 if m == 0:
-                    linhas_proj.append({"Mês": f"Mês {m}", "Capital Inicial": saldo_inicial, "Aportes Acumulados": 0.0, "Juros/Divs Acumulados": 0.0})
+                    linhas_proj.append({"Mês": f"Mês {m}", "Capital Inicial": saldo_inicial, "Aportes Acumulados": 0.0, "Rendimentos/Divs Acumulados": 0.0})
                 else:
                     gc = saldo_dinamico * rent
                     div_m = base_div * ((1 + cresc_div) ** (m/12))
@@ -667,13 +668,23 @@ if not st.session_state.df_base.empty:
                     saldo_dinamico += (gc + div_m + aporte)
                     
                     linhas_proj.append({
-                        "Mês": f"Mês {m}", "Capital Inicial": saldo_inicial, "Aportes Acumulados": ac_ap, "Juros/Divs Acumulados": ac_jd
+                        "Mês": f"Mês {m}", 
+                        "Capital Inicial": saldo_inicial, 
+                        "Aportes Acumulados": ac_ap, 
+                        "Rendimentos/Divs Acumulados": ac_jd
                     })
             
             df_proj_plot = pd.DataFrame(linhas_proj)
-            df_melt_proj = df_proj_plot.melt(id_vars=["Mês"], value_vars=["Capital Inicial", "Aportes Acumulados", "Juros/Divs Acumulados"], var_name="Componente", value_name="Valor (R$)")
+            df_melt_proj = df_proj_plot.melt(id_vars=["Mês"], value_vars=["Capital Inicial", "Aportes Acumulados", "Rendimentos/Divs Acumulados"], var_name="Componente", value_name="Valor (R$)")
             
-            fig_proj = px.bar(df_melt_proj, x="Mês", y="Valor (R$)", color="Componente", title="Evolução Patrimonial Controlada (Alocação Separada)")
+            fig_proj = px.bar(
+                df_melt_proj, 
+                x="Mês", 
+                y="Valor (R$)", 
+                color="Componente", 
+                title="Evolução Patrimonial Controlada (Alocação Separada)",
+                labels={"Valor (R$)": "Patrimônio Total (R$)"}
+            )
             st.plotly_chart(fig_proj, use_container_width=True)
 
         with t4:
@@ -880,7 +891,8 @@ if not st.session_state.df_base.empty:
                             
                         ctx_m = f"Selic: {f_pct(selic_hoje)}|IPCA: {f_pct(ipca_12m_hoje)}. Focus {ano_atual}: Sel {f_pct(proj_focus.get(f'Selic_{ano_atual}'))}/IPCA {f_pct(proj_focus.get(f'IPCA_{ano_atual}'))}"
                         
-                        # REFACTOR: Prompt ajustado conforme instrução para manter objetividade sênior e condicionalidade
+                        historico_texto = "\n".join([f"{'Usuário' if m['role']=='user' else 'Gestora IA'}: {m['content']}" for m in st.session_state.historico_chat[-11:-1]])
+                        
                         sys_prompt = (
                             f"Você é um renomado Analista Sênior CNPI. [Dados da Carteira]: {ctx_c}. [Macro]: {ctx_m}. "
                             f"Forneça respostas executivas, objetivas e profundas, cruzando valuations de Graham/Bazin e "
@@ -888,7 +900,8 @@ if not st.session_state.df_base.empty:
                             f"REGRA ESTRITA DE CONTEXTO: "
                             f"1) Se o usuário CITAR a própria carteira ou ativos que possui, analise os [Dados da Carteira]. "
                             f"2) Se o usuário NÃO citar a carteira, forneça recomendações e análises diretas de mercado (ações, FIIs, etc) "
-                            f"ignorando totalmente os ativos que ele já possui."
+                            f"ignorando totalmente os ativos que ele já possui.\n\n"
+                            f"=== CONTEXTO DA CONVERSA ATUAL ===\n{historico_texto}"
                         )
                         
                         resposta = "⚠️ Chave API ausente ou não configurada."
@@ -899,7 +912,6 @@ if not st.session_state.df_base.empty:
                                 resp_ok = False
                                 ultimo_erro = ""
                                 
-                                # Revertido para os modelos de ponta que funcionaram perfeitamente com a API Key informada anteriormente
                                 for m in ['gemini-2.5-flash', 'gemini-1.5-flash']:
                                     try:
                                         resposta = genai.GenerativeModel(m).generate_content([sys_prompt, prompt]).text
