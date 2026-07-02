@@ -245,40 +245,52 @@ def consolidar_carteira(df):
     return pd.DataFrame(linhas)
 
 # ==========================================
-# SCANNER ADAPTATIVO AVANÇADO B3
+# SCANNER ADAPTATIVO AVANÇADO B3 (CORRIGIDO)
 # ==========================================
 def corrigir_cabecalho_b3(df):
     if df.empty: return df
     if 'Data do Negócio' in df.columns or 'Data Média' in df.columns: 
         return df
         
-    for i in range(min(30, len(df))):
-        linha_limpa = df.iloc[i].astype(str).str.strip().str.upper().tolist()
-        
-        # Reconhecimento resiliente por prefixo de colunas financeiras estruturais
-        is_negociacao = any('DATA DO' in str(c) or 'NEGÓCIO' in str(c) or 'NEGOCIO' in str(c) for c in linha_limpa)
-        is_movimentacao = any('PRODUTO' in str(c) or 'ATIVO' in str(c) for c in linha_limpa) and any('MOVIMENTA' in str(c) or 'MOVIMEN' in str(c) for c in linha_limpa)
+    def tentar_mapear(lista_colunas):
+        lista_upper = [str(c).strip().upper() for c in lista_colunas]
+        is_negociacao = any('DATA DO' in c or 'NEGÓCIO' in c or 'NEGOCIO' in c for c in lista_upper)
+        is_movimentacao = any('PRODUTO' in c or 'ATIVO' in c for c in lista_upper) and any('MOVIMENTA' in c or 'MOVIMEN' in c for c in lista_upper)
         
         if is_negociacao or is_movimentacao:
-            colunas_reais = df.iloc[i].astype(str).str.strip().tolist()
-            df.columns = colunas_reais
-            df_sub = df.iloc[i+1:].reset_index(drop=True)
-            
             mapeamento = {}
-            for col in df_sub.columns:
+            for col in lista_colunas:
                 c_up = str(col).strip().upper()
                 if 'DAT' in c_up: mapeamento[col] = 'Data do Negócio'
-                elif 'PROD' in c_up or 'ATIV' in c_up or 'CÓD' in c_up or 'COD' in c_up: mapeamento[col] = 'Código de Negociação'
+                elif 'PROD' in c_up or 'ATIV' in c_up or 'CÓD' in c_up or 'COD' in c_up or 'PAPEL' in c_up: mapeamento[col] = 'Código de Negociação'
                 elif 'MOV' in c_up or 'TIP' in c_up: mapeamento[col] = 'Tipo de Movimentação'
                 elif 'VAL' in c_up: mapeamento[col] = 'Valor'
                 elif 'QUA' in c_up or 'QTD' in c_up: mapeamento[col] = 'Quantidade'
                 elif 'PRE' in c_up: mapeamento[col] = 'Preço Unitário'
-                
+                elif 'ENTRADA' in c_up or 'SAÍDA' in c_up or 'SAIDA' in c_up: mapeamento[col] = 'Entrada/Saída'
+            return mapeamento, is_movimentacao
+        return None, False
+
+    # CASO 1: O arquivo já veio perfeitamente limpo desde o topo (Caso da planilha do Ítalo)
+    mapeamento, is_mov = tentar_mapear(df.columns.tolist())
+    if mapeamento and ('Data do Negócio' in mapeamento.values() or 'Código de Negociação' in mapeamento.values()):
+        df = df.rename(columns=mapeamento)
+        if is_mov and 'Valor' not in df.columns and 'Preço Unitário' in df.columns and 'Quantidade' in df.columns:
+            df['Valor'] = df['Quantidade'].apply(limpar_numero) * df['Preço Unitário'].apply(limpar_numero)
+        return df
+
+    # CASO 2: O arquivo possui linhas poluídas acima das colunas reais (Padrão de exportações pesadas da B3)
+    for i in range(min(30, len(df))):
+        linha = df.iloc[i].tolist()
+        mapeamento, is_mov = tentar_mapear(linha)
+        if mapeamento:
+            df.columns = linha
+            df_sub = df.iloc[i+1:].reset_index(drop=True)
             df_sub = df_sub.rename(columns=mapeamento)
-            
-            if 'Valor' not in df_sub.columns and 'Preço Unitário' in df_sub.columns and 'Quantidade' in df_sub.columns:
+            if is_mov and 'Valor' not in df_sub.columns and 'Preço Unitário' in df_sub.columns and 'Quantidade' in df_sub.columns:
                 df_sub['Valor'] = df_sub['Quantidade'].apply(limpar_numero) * df_sub['Preço Unitário'].apply(limpar_numero)
             return df_sub
+            
     return df
 
 def processar_planilha_b3(df):
@@ -302,22 +314,44 @@ def processar_planilha_b3(df):
         elif " " in ticker_raw: ticker_raw = ticker_raw.split(" ")[0].strip()
             
         ticker = MAPEAMENTO_TICKERS.get(ticker_raw[:-1] if ticker_raw.endswith('F') and len(ticker_raw) > 4 else ticker_raw, ticker_raw[:-1] if ticker_raw.endswith('F') and len(ticker_raw) > 4 else ticker_raw)
-        if re.match(r'^[A-Z]{4}[A-Z]\d+', ticker) and not ticker.endswith(('11','34','39')) and len(ticker)>=6: continue
+        
+        # Filtro de Segurança: Garante formato de ticker de renda variável (Ações/FIIs/BDRs) e ignora Renda Fixa (CDB)
+        if not re.match(r'^[A-Z]{4}\d{1,2}$', ticker):
+            continue
+            
+        # Filtro de Segurança: Ignora proventos em dinheiro para não inflar ou desbalancear as cotas
+        if 'Tipo de Movimentação' in df.columns:
+            mov_tipo_str = str(row['Tipo de Movimentação']).strip().upper()
+            if any(p in mov_tipo_str for p in ['RENDIMENTO', 'JUROS', 'DIVIDENDO', 'JCP', 'REEMBOLSO']):
+                continue
         
         qtd, valor, data = row['Quantidade'], row['Valor'], row['Data do Negócio'] if pd.notna(row['Data do Negócio']) else pd.Timestamp.now()
         if ticker not in posicoes: posicoes[ticker] = {'qtd': 0.0, 'valor': 0.0, 'ts_medio': 0.0}
         
-        tipo_mov = str(row['Tipo de Movimentação']).strip().upper()
+        is_compra = False
+        is_venda = False
         
-        # Mapeamento abrangente para compras e entradas de custódia (Crédito)
-        if any(term in tipo_mov for term in ['COMPRA', 'CREDITO', 'CRÉDITO', 'LIQUIDAÇÃO', 'LIQUIDACAO', 'TRANSFERENCIA', 'TRANSFERÊNCIA']) or tipo_mov == 'C':
+        # Identificação precisa baseada na direção financeira do Extrato de Movimentações
+        if 'Entrada/Saída' in df.columns and pd.notna(row['Entrada/Saída']):
+            io_dir = str(row['Entrada/Saída']).strip().upper()
+            if 'CRED' in io_dir or 'ENT' in io_dir: is_compra = True
+            elif 'DEB' in io_dir or 'SAI' in io_dir: is_venda = True
+        
+        # Fallback para o Extrato de Negociações
+        if not is_compra and not is_venda and 'Tipo de Movimentação' in df.columns:
+            tipo_mov = str(row['Tipo de Movimentação']).strip().upper()
+            if any(term in tipo_mov for term in ['COMPRA', 'CREDITO', 'CRÉDITO', 'LIQUIDAÇÃO', 'LIQUIDACAO', 'TRANSFERENCIA', 'TRANSFERÊNCIA']) or tipo_mov == 'C':
+                is_compra = True
+            elif any(term in tipo_mov for term in ['VENDA', 'DEBITO', 'DÉBITO']) or tipo_mov == 'V':
+                is_venda = True
+        
+        if is_compra:
             q_ant, ts_ant = posicoes[ticker]['qtd'], posicoes[ticker]['ts_medio']
             ts_novo = pd.Timestamp(data).timestamp()
             posicoes[ticker]['ts_medio'] = ts_novo if q_ant == 0 else ((ts_ant * q_ant) + (ts_novo * qtd)) / (q_ant + qtd)
             posicoes[ticker]['qtd'] += qtd
             posicoes[ticker]['valor'] += valor
-        # Mapeamento abrangente para vendas e saídas de custódia (Débito)
-        elif any(term in tipo_mov for term in ['VENDA', 'DEBITO', 'DÉBITO']) or tipo_mov == 'V':
+        elif is_venda:
             if qtd >= (posicoes[ticker]['qtd'] - 0.001): posicoes[ticker] = {'qtd': 0.0, 'valor': 0.0, 'ts_medio': 0.0}
             else:
                 pm = posicoes[ticker]['valor'] / posicoes[ticker]['qtd'] if posicoes[ticker]['qtd'] > 0 else 0
@@ -361,7 +395,6 @@ if st.sidebar.button("🚀 Processar", use_container_width=True):
     if arquivo_principal:
         txt = arquivo_principal.getvalue().decode('utf-8-sig', errors='ignore') if arquivo_principal.name.endswith('.csv') else None
         
-        # Detecção avançada de delimitador para arquivos CSV convertidos fora do padrão
         if txt:
             linhas_amostra = "".join(txt.split('\n')[:5])
             sep_detectado = '\t' if linhas_amostra.count('\t') > linhas_amostra.count(';') and linhas_amostra.count('\t') > linhas_amostra.count(',') else (';' if linhas_amostra.count(';') >= linhas_amostra.count(',') else ',')
@@ -572,7 +605,6 @@ if not st.session_state.df_base.empty:
             st.markdown("---")
             st.markdown("#### 📈 Gráfico Dinâmico Comparativo Histórico (Linhas)")
             
-            # NOVO: Controlos dinâmicos avançados restaurados conforme solicitado
             ativos_disponiveis = sorted(df_perf_final['Ativo'].unique().tolist())
             ativo_selecionado = st.selectbox("Escolha o Ativo para Análise Histórica:", ativos_disponiveis)
             
@@ -598,7 +630,6 @@ if not st.session_state.df_base.empty:
                     if not historico_precos.empty:
                         df_linhas_evol = pd.DataFrame(index=historico_precos.index)
                         
-                        # Evolução nominal base 100 do ativo selecionado
                         preco_referencia = historico_precos['Close'].iloc[0]
                         df_linhas_evol[ativo_selecionado] = (historico_precos['Close'] / preco_referencia) * 100
                         
