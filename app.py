@@ -244,9 +244,6 @@ def consolidar_carteira(df):
         linhas.append({"Ativo": ativo, "Quantidade": qtd, "Preço Médio": float(pm), "Data Média": pd.to_datetime(soma_tempo/qtd, unit='s').date() if qtd>0 else pd.Timestamp.now().date()})
     return pd.DataFrame(linhas)
 
-# ==========================================
-# SCANNER ADAPTATIVO AVANÇADO B3
-# ==========================================
 def corrigir_cabecalho_b3(df):
     if df.empty: return df
     if 'Data do Negócio' in df.columns or 'Data Média' in df.columns: 
@@ -597,77 +594,85 @@ if not st.session_state.df_base.empty:
             c_g2.plotly_chart(px.pie(df_perf_final, values='Saldo Atual', names='Setor', title="Por Setor"), use_container_width=True)
             
             st.markdown("---")
-            st.markdown("#### 📈 Gráfico Dinâmico Comparativo Histórico (Linhas)")
+            st.markdown("#### 📊 Gráfico Dinâmico Comparativo Histórico (Barras)")
             
-            # RECONSTRUÇÃO DO LAYOUT ORIGINAL DE MÚLTIPLA SELEÇÃO SOLICITADO
             ativos_disponiveis = sorted(df_perf_final['Ativo'].unique().tolist())
             
             c_f_g1, c_f_g2 = st.columns(2)
-            ativos_sel = c_f_g1.multiselect("Selecione os Ativos para o gráfico:", options=ativos_disponiveis, default=ativos_disponiveis[:2] if ativos_disponiveis else [])
+            ativos_sel = c_f_g1.multiselect("Selecione os Ativos para o gráfico:", options=ativos_disponiveis, default=ativos_disponiveis[:5] if len(ativos_disponiveis) >= 5 else ativos_disponiveis)
             indexadores_sel = c_f_g2.multiselect("Selecione os Indexadores para Comparação:", ['CDI', 'IPCA'], default=['CDI', 'IPCA'])
             
             janela_temporal = st.radio("Período de Leitura do Gráfico:", ["Desde a Data de Compra (Automático)", "Definir Período Customizado (Manual)"], horizontal=True)
             
             if janela_temporal == "Desde a Data de Compra (Automático)":
-                dates = [st.session_state.dados_mercado[a]['Data'].date() for a in ativos_sel if a in st.session_state.dados_mercado]
-                dt_inicial = min(dates) if dates else pd.Timestamp.now().date() - pd.Timedelta(days=365)
-                dt_final = pd.Timestamp.now().date()
-                st.info(f"Análise configurada automaticamente a partir do ativo mais antigo selecionado: {dt_inicial.strftime('%d/%m/%Y')}")
+                st.info("Neste modo, o CDI e o IPCA são calculados individualmente para cada ativo, considerando exatamente o tempo que ele está na carteira.")
+                if ativos_sel:
+                    df_comp = df_perf_final[df_perf_final['Ativo'].isin(ativos_sel)][['Ativo', 'Evolução c/ Div (%)', 'CDI Acum. (%)', 'IPCA Acum. (%)']].copy()
+                    df_comp = df_comp.rename(columns={'Evolução c/ Div (%)': 'Carteira (c/ Div)', 'CDI Acum. (%)': 'CDI', 'IPCA Acum. (%)': 'IPCA'})
+                    
+                    colunas_manter = ['Ativo', 'Carteira (c/ Div)'] + [ind for ind in indexadores_sel]
+                    df_comp = df_comp[colunas_manter]
+                    df_melt = df_comp.melt(id_vars='Ativo', var_name='Indicador', value_name='Rentabilidade (%)')
+                    
+                    fig_comp = px.bar(
+                        df_melt, x='Ativo', y='Rentabilidade (%)', color='Indicador', barmode='group',
+                        color_discrete_map={'Carteira (c/ Div)': '#1f77b4', 'CDI': '#ff7f0e', 'IPCA': '#2ca02c'},
+                        title="Rentabilidade Acumulada por Ativo vs Indexadores (Real Time na Carteira)"
+                    )
+                    st.plotly_chart(fig_comp, use_container_width=True)
+                else:
+                    st.warning("Selecione ao menos um ativo para visualizar o gráfico.")
             else:
                 c_dt1, c_dt2 = st.columns(2)
                 dt_inicial = c_dt1.date_input("De:", pd.Timestamp.now().date() - pd.Timedelta(days=365))
                 dt_final = c_dt2.date_input("Até:", pd.Timestamp.now().date())
                 
-            if st.button("Gerar Curva de Evolução Histórica", use_container_width=True):
-                if ativos_sel:
-                    with st.spinner("Buscando cotações históricas e calculando indexadores..."):
-                        df_linhas_evol = pd.DataFrame()
-                        
-                        # Processamento dos indexadores econômicos
-                        df_macro = carregar_macro()
-                        filtro_macro_g = pd.DataFrame()
-                        if not df_macro.empty:
-                            try: filtro_macro_g = df_macro.loc[dt_inicial:dt_final]
-                            except: pass
-                        
-                        # Processamento e montagem das curvas base 100 dos ativos selecionados
-                        for ativo in ativos_sel:
-                            historico_precos = yf.Ticker(f"{ativo}.SA").history(start=dt_inicial, end=dt_final)
-                            if not historico_precos.empty:
-                                # SOLUÇÃO COMPLETA DO TYPEERROR: Força o índice a remover a informação de timezone
-                                historico_precos.index = historico_precos.index.tz_localize(None)
+                if st.button("Gerar Gráfico Comparativo", use_container_width=True):
+                    if ativos_sel:
+                        with st.spinner("Buscando cotações e calculando indexadores históricos..."):
+                            df_macro = carregar_macro()
+                            cdi_m, ipca_m = 0.0, 0.0
+                            if not df_macro.empty:
+                                try:
+                                    filtro_macro = df_macro.loc[dt_inicial:dt_final]
+                                    cdi_m = ((1 + filtro_macro['CDI'].dropna()).prod() - 1) * 100
+                                    ipca_m = ((1 + filtro_macro['IPCA'].dropna()).prod() - 1) * 100
+                                except: pass
                                 
-                                preco_referencia = historico_precos['Close'].iloc[0]
-                                df_linhas_evol[ativo] = (historico_precos['Close'] / preco_referencia) * 100
-                        
-                        if not df_linhas_evol.empty:
-                            # Inserção alinhada do CDI acumulado na linha temporal unificada
-                            if 'CDI' in indexadores_sel and not filtro_macro_g.empty:
-                                cdi_fator = (1 + filtro_macro_g['CDI']).cumprod() * 100
-                                df_linhas_evol['CDI'] = cdi_fator.reindex(df_linhas_evol.index, method='ffill').fillna(100)
+                            linhas_m_res = []
+                            for t in ativos_sel:
+                                r_ativo = 0.0
+                                try:
+                                    h_ticker = yf.Ticker(f"{t}.SA").history(start=dt_inicial, end=dt_final)
+                                    if not h_ticker.empty and len(h_ticker) >= 2:
+                                        p_ini = h_ticker['Close'].iloc[0]
+                                        p_fim = h_ticker['Close'].iloc[-1]
+                                        d_periodo = 0.0
+                                        try:
+                                            all_divs = yf.Ticker(f"{t}.SA").dividends
+                                            if not all_divs.empty:
+                                                if all_divs.index.tz is not None: all_divs.index = all_divs.index.tz_localize(None)
+                                                d_periodo = all_divs[(all_divs.index >= pd.Timestamp(dt_inicial)) & (all_divs.index <= pd.Timestamp(dt_final))].sum()
+                                        except: pass
+                                        r_ativo = ((p_fim + d_periodo) / p_ini - 1) * 100
+                                except: pass
                                 
-                            # Inserção alinhada do IPCA acumulado na linha temporal unificada
-                            if 'IPCA' in indexadores_sel and not filtro_macro_g.empty:
-                                ipca_fator = (1 + filtro_macro_g['IPCA']).cumprod() * 100
-                                df_linhas_evol['IPCA'] = ipca_fator.reindex(df_linhas_evol.index, method='ffill').fillna(100)
+                                item_m = {'Ativo': t, 'Carteira (c/ Div)': r_ativo}
+                                if 'CDI' in indexadores_sel: item_m['CDI'] = cdi_m
+                                if 'IPCA' in indexadores_sel: item_m['IPCA'] = ipca_m
+                                linhas_m_res.append(item_m)
                                 
-                            df_linhas_evol = df_linhas_evol.reset_index()
-                            df_linhas_evol.rename(columns={'index': 'Date', 'Date': 'Date'}, inplace=True)
-                            if 'Date' in df_linhas_evol.columns:
-                                df_linhas_evol['Date'] = pd.to_datetime(df_linhas_evol['Date']).dt.date
-                            
-                            colunas_plot = [c for c in df_linhas_evol.columns if c != 'Date']
-                            df_melted_plot = df_linhas_evol.melt(id_vars='Date', value_vars=colunas_plot, var_name='Ativo/Benchmark', value_name='Evolução (Base 100)')
-                            
-                            fig_linhas_final = px.line(
-                                df_melted_plot, x='Date', y='Evolução (Base 100)', color='Ativo/Benchmark',
-                                title="Evolução Histórica Comparativa Real Time (Base 100)"
-                            )
-                            st.plotly_chart(fig_linhas_final, use_container_width=True)
-                        else:
-                            st.error("Nenhum dado histórico de cotação foi localizado no intervalo.")
-                else:
-                    st.warning("Selecione pelo menos um ativo para gerar o gráfico.")
+                            df_m_plot = pd.DataFrame(linhas_m_res)
+                            if not df_m_plot.empty:
+                                df_melt_m = df_m_plot.melt(id_vars='Ativo', var_name='Indicador', value_name='Rentabilidade (%)')
+                                fig_comp_m = px.bar(
+                                    df_melt_m, x='Ativo', y='Rentabilidade (%)', color='Indicador', barmode='group',
+                                    color_discrete_map={'Carteira (c/ Div)': '#1f77b4', 'CDI': '#ff7f0e', 'IPCA': '#2ca02c'},
+                                    title=f"Desempenho de {dt_inicial.strftime('%d/%m/%Y')} até {dt_final.strftime('%d/%m/%Y')}"
+                                )
+                                st.plotly_chart(fig_comp_m, use_container_width=True)
+                    else:
+                        st.warning("Selecione ao menos um ativo para visualizar o gráfico.")
 
         with t5:
             st.markdown("### 💸 Proventos (Mensais e Exportação)")
