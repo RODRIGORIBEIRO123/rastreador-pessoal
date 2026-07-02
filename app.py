@@ -847,7 +847,7 @@ if not st.session_state.df_base.empty:
                 st.info("Sincronize com o Mercado Vivo para levantar a base histórica completa de dividendos.")
 
         # ==========================================
-        # 9. REFACTOR: MÁQUINA DE ESTADOS DO CHAT DA IA
+        # 9. COMITÊ DE IA (CHAT INTERNO RESTAURADO)
         # ==========================================
         with t6:
             st.markdown("### 💬 Comitê de IA - Análise CNPI Avançada")
@@ -858,29 +858,29 @@ if not st.session_state.df_base.empty:
                 if os.path.exists(ARQUIVO_CHAT): os.remove(ARQUIVO_CHAT)
                 st.rerun()
 
-            # Captura da Credencial Isolada
-            try: api_key = st.secrets.get("GEMINI_API_KEY", "")
-            except: api_key = ""
+            try: 
+                api_key = st.secrets.get("GEMINI_API_KEY", "")
+            except: 
+                api_key = ""
                 
             if not api_key:
                 api_key = st.text_input("Insira sua Gemini API Key para ativar a IA:", type="password")
                 
-            # Passo 1: Renderiza o histórico de mensagens consolidado
+            # Exibe o histórico de conversas primeiro
             for msg in st.session_state.historico_chat:
                 with st.chat_message(msg["role"]): st.write(msg["content"])
                 
-            # Passo 2: Captura nova pergunta e força rerun para atualizar a interface imediatamente
             if prompt := st.chat_input("Pergunte à Gestora IA...", key="ia_chat_input_unique"):
+                # 1. Salva a nova pergunta no histórico
                 st.session_state.historico_chat.append({"role": "user", "content": prompt})
                 salvar_chat()
-                st.rerun()
                 
-            # Passo 3: Se a última entrada for do usuário, abre o contêiner do assistente com o Spinner ativo fixado
-            if st.session_state.historico_chat[-1]["role"] == "user":
+                # 2. Exibe a pergunta do usuário na tela instantaneamente
+                with st.chat_message("user"): st.write(prompt)
+                
+                # 3. Abre a caixa de resposta da IA e ativa o spinner visualmente
                 with st.chat_message("assistant"):
                     with st.spinner("O Comitê de IA está cruzando a posição dos ativos com a conjuntura macroeconômica..."):
-                        
-                        # Salvaguarda estrutural contra NameError de tabela ausente
                         if 'df_perf_final' in locals() or 'df_perf_final' in globals():
                             ctx_c = df_perf_final[['Ativo', 'Qtd', 'Preço Médio', 'Preço Atual', 'Evolução c/ Div (%)']].to_csv(index=False)
                         else:
@@ -889,7 +889,7 @@ if not st.session_state.df_base.empty:
                         ctx_m = f"Selic: {f_pct(selic_hoje)}|IPCA: {f_pct(ipca_12m_hoje)}. Focus {ano_atual}: Sel {f_pct(proj_focus.get(f'Selic_{ano_atual}'))}/IPCA {f_pct(proj_focus.get(f'IPCA_{ano_atual}'))}"
                         sys_prompt = f"Você é um renomado Analista Sênior CNPI. [Dados da Carteira]: {ctx_c}. [Macro]: {ctx_m}. Forneça respostas executivas, profundas, cruze valuations contábeis de Graham/Bazin e emita pareceres claros e acionáveis de compra/manutenção com dicas táticas de alocação de ativos."
                         
-                        resposta = "⚠️ Chave API ausente ou não configurada nos segredos."
+                        resposta = "⚠️ Chave API ausente ou não configurada."
                         if api_key:
                             try:
                                 import google.generativeai as genai
@@ -897,20 +897,24 @@ if not st.session_state.df_base.empty:
                                 resp_ok = False
                                 ultimo_erro = ""
                                 
-                                # Modelos estáveis homologados pela API
-                                for m in ['gemini-1.5-flash', 'gemini-1.5-pro']:
+                                # Modelos homologados e funcionais que forneceram a boa dica de compra
+                                for m in ['gemini-3.5-flash', 'gemini-3.1-flash-lite', 'gemini-2.5-flash', 'gemini-1.5-flash']:
                                     try:
-                                        resposta = genai.GenerativeModel(m).generate_content([sys_prompt, st.session_state.historico_chat[-1]["content"]]).text
+                                        resposta = genai.GenerativeModel(m).generate_content([sys_prompt, prompt]).text
                                         resp_ok = True
                                         break 
                                     except Exception as err:
                                         ultimo_erro = str(err)
                                         continue
+                                        
                                 if not resp_ok:
-                                    resposta = f"⚠️ Falha de comunicação com a API do Gemini. Motivo retornado pelo servidor: {ultimo_erro}"
+                                    resposta = f"⚠️ Falha de comunicação com a API do Gemini. Erro retornado pelo servidor: {ultimo_erro}"
                             except Exception as e:
-                                resposta = f"⚠️ Erro estrutural ao inicializar a biblioteca GenerativeAI: {e}"
-                                
-                    st.session_state.historico_chat.append({"role": "assistant", "content": resposta})
-                    salvar_chat()
-                    st.rerun()
+                                resposta = f"⚠️ Erro estrutural ao inicializar a biblioteca de Inteligência Artificial: {e}"
+                        
+                        # 4. Escreve a resposta na tela diretamente (sem dar st.rerun para não quebrar o layout)
+                        st.write(resposta)
+                        
+                        # 5. Salva a resposta no histórico definitivo
+                        st.session_state.historico_chat.append({"role": "assistant", "content": resposta})
+                        salvar_chat()
