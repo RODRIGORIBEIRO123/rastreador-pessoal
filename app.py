@@ -148,7 +148,7 @@ if not st.session_state.logged_in:
 st.title(f"📊 Terminal de Gestão - Analista: {st.session_state.username.upper()} ({pd.Timestamp.now().strftime('%d/%m/%Y')})")
 
 ARQUIVO_CHAT = f"historico_ia_{st.session_state.username}.json"
-MENSAGEM_INICIAL = [{"role": "assistant", "content": f"Saudações, {st.session_state.username}. O terminal está mapeado em tempo real. Como posso ajudar com a sua carteira hoje?"}]
+MENSAGEM_INICIAL = [{"role": "assistant", "content": f"Saudações, {st.session_state.username}. O terminal está mapeado em tempo real. Como posso ajudar com a sua carteira ou com o mercado hoje?"}]
 
 if 'historico_chat' not in st.session_state:
     if os.path.exists(ARQUIVO_CHAT):
@@ -463,7 +463,7 @@ if st.sidebar.button("🚀 Processar", use_container_width=True):
 proj_focus, ano_atual = obter_projecoes_focus()
 selic_hoje, ipca_12m_hoje = obter_macro_atual()
 
-st.markdown("### 🇧🇷 Conjuntura Macroeconômica")
+st.markdown("### 👑 Conjuntura Macroeconômica")
 c_m1, c_m2 = st.columns([1, 2])
 c_m1.success(f"🎯 **Cenário Atual (Vigente)**\n\nSelic Atual: **{f_pct(selic_hoje)} a.a.**\n\nIPCA 12 meses: **{f_pct(ipca_12m_hoje)}**")
 c_m2.info(
@@ -784,7 +784,7 @@ if not st.session_state.df_base.empty:
                                 if divs.index.tz is not None: divs.index = divs.index.tz_localize(None)
                                 dm_val = divs[(divs.index.month == m_sel) & (divs.index.year == a_sel)].sum()
                                 if dm_val > 0:
-                                    yoc = ((dm_val * dm['Qtd']) / (dm['Qtd'] * dm['PM'])) * 100 if dm['PM']>0 else 0
+                                    yoc = ((get_val := dm_val * dm['Qtd']) / (dm['Qtd'] * dm['PM'])) * 100 if dm['PM']>0 else 0
                                     dy = (dm_val / dm['Preço Atual']) * 100 if dm['Preço Atual']>0 else 0
                                     l_div.append({"Ativo": t, "Unitário (R$)": float(dm_val), "Qtd": int(dm['Qtd']), "Recebido (R$)": float(dm_val * dm['Qtd']), "Yield on Cost (%)": float(yoc), "DY Atual (%)": float(dy)})
                         except: pass
@@ -863,11 +863,9 @@ if not st.session_state.df_base.empty:
             if not api_key:
                 api_key = st.text_input("Insira sua Gemini API Key para ativar a IA:", type="password")
                 
-            # Exibir mensagens antigas
             for msg in st.session_state.historico_chat:
                 with st.chat_message(msg["role"]): st.write(msg["content"])
                 
-            # REFACTOR: Fluxo síncrono unificado do chat para travar a caixa sempre aberta no rodapé
             if prompt := st.chat_input("Pergunte à Gestora IA...", key="ia_chat_input_unique"):
                 with st.chat_message("user"): st.write(prompt)
                 st.session_state.historico_chat.append({"role": "user", "content": prompt})
@@ -882,14 +880,15 @@ if not st.session_state.df_base.empty:
                             
                         ctx_m = f"Selic: {f_pct(selic_hoje)}|IPCA: {f_pct(ipca_12m_hoje)}. Focus {ano_atual}: Sel {f_pct(proj_focus.get(f'Selic_{ano_atual}'))}/IPCA {f_pct(proj_focus.get(f'IPCA_{ano_atual}'))}"
                         
-                        # REFACTOR: Prompt de sistema calibrado para flexibilidade contextual solicitado
+                        # REFACTOR: Prompt ajustado conforme instrução para manter objetividade sênior e condicionalidade
                         sys_prompt = (
-                            f"Você é um renomado Analista Sênior CNPI. "
-                            f"Contexto macroeconômico atual do Brasil: {ctx_m}. "
-                            f"Caso o usuário faça perguntas específicas sobre a carteira dele, utilize estes dados: {ctx_c}. "
-                            f"DIRETRIZ CRÍTICA: Se o usuário fizer uma pergunta genérica sobre economia, finanças, contabilidade ou "
-                            f"indicações de ativos sem citar explicitamente a própria posição dele, responda de forma puramente abrangente, "
-                            f"teórica ou mercadológica. NÃO tente empurrar ou citar a carteira dele de forma forçada se a pergunta for geral."
+                            f"Você é um renomado Analista Sênior CNPI. [Dados da Carteira]: {ctx_c}. [Macro]: {ctx_m}. "
+                            f"Forneça respostas executivas, objetivas e profundas, cruzando valuations de Graham/Bazin e "
+                            f"emitindo pareceres claros e acionáveis de alocação. "
+                            f"REGRA ESTRITA DE CONTEXTO: "
+                            f"1) Se o usuário CITAR a própria carteira ou ativos que possui, analise os [Dados da Carteira]. "
+                            f"2) Se o usuário NÃO citar a carteira, forneça recomendações e análises diretas de mercado (ações, FIIs, etc) "
+                            f"ignorando totalmente os ativos que ele já possui."
                         )
                         
                         resposta = "⚠️ Chave API ausente ou não configurada."
@@ -899,7 +898,9 @@ if not st.session_state.df_base.empty:
                                 genai.configure(api_key=api_key)
                                 resp_ok = False
                                 ultimo_erro = ""
-                                for m in ['gemini-2.5-flash', 'gemini-1.5-pro', 'gemini-1.5-flash']:
+                                
+                                # Revertido para os modelos de ponta que funcionaram perfeitamente com a API Key informada anteriormente
+                                for m in ['gemini-2.5-flash', 'gemini-1.5-flash']:
                                     try:
                                         resposta = genai.GenerativeModel(m).generate_content([sys_prompt, prompt]).text
                                         resp_ok = True
