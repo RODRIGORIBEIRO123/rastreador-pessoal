@@ -463,7 +463,7 @@ if st.sidebar.button("🚀 Processar", use_container_width=True):
 proj_focus, ano_atual = obter_projecoes_focus()
 selic_hoje, ipca_12m_hoje = obter_macro_atual()
 
-st.markdown("### 👑 Conjuntura Macroeconômica")
+st.markdown("### 🇧🇷 Conjuntura Macroeconômica")
 c_m1, c_m2 = st.columns([1, 2])
 c_m1.success(f"🎯 **Cenário Atual (Vigente)**\n\nSelic Atual: **{f_pct(selic_hoje)} a.a.**\n\nIPCA 12 meses: **{f_pct(ipca_12m_hoje)}**")
 c_m2.info(
@@ -658,7 +658,7 @@ if not st.session_state.df_base.empty:
             
             for m in range(13):
                 if m == 0:
-                    linhas_proj.append({"Mês": f"Mês {m}", "Capital Inicial": saldo_inicial, "Aportes Acumulados": 0.0, "Juros/Divs Acumados": 0.0})
+                    linhas_proj.append({"Mês": f"Mês {m}", "Capital Inicial": saldo_inicial, "Aportes Acumulados": 0.0, "Juros/Divs Acumulados": 0.0})
                 else:
                     gc = saldo_dinamico * rent
                     div_m = base_div * ((1 + cresc_div) ** (m/12))
@@ -667,11 +667,11 @@ if not st.session_state.df_base.empty:
                     saldo_dinamico += (gc + div_m + aporte)
                     
                     linhas_proj.append({
-                        "Mês": f"Mês {m}", "Capital Inicial": saldo_inicial, "Aportes Acumulados": ac_ap, "Juros/Divs Acumados": ac_jd
+                        "Mês": f"Mês {m}", "Capital Inicial": saldo_inicial, "Aportes Acumulados": ac_ap, "Juros/Divs Acumulados": ac_jd
                     })
             
             df_proj_plot = pd.DataFrame(linhas_proj)
-            df_melt_proj = df_proj_plot.melt(id_vars=["Mês"], value_vars=["Capital Inicial", "Aportes Acumulados", "Juros/Divs Acumados"], var_name="Componente", value_name="Valor (R$)")
+            df_melt_proj = df_proj_plot.melt(id_vars=["Mês"], value_vars=["Capital Inicial", "Aportes Acumulados", "Juros/Divs Acumulados"], var_name="Componente", value_name="Valor (R$)")
             
             fig_proj = px.bar(df_melt_proj, x="Mês", y="Valor (R$)", color="Componente", title="Evolução Patrimonial Controlada (Alocação Separada)")
             st.plotly_chart(fig_proj, use_container_width=True)
@@ -784,7 +784,7 @@ if not st.session_state.df_base.empty:
                                 if divs.index.tz is not None: divs.index = divs.index.tz_localize(None)
                                 dm_val = divs[(divs.index.month == m_sel) & (divs.index.year == a_sel)].sum()
                                 if dm_val > 0:
-                                    yoc = ((get_val := dm_val * dm['Qtd']) / (dm['Qtd'] * dm['PM'])) * 100 if dm['PM']>0 else 0
+                                    yoc = ((dm_val * dm['Qtd']) / (dm['Qtd'] * dm['PM'])) * 100 if dm['PM']>0 else 0
                                     dy = (dm_val / dm['Preço Atual']) * 100 if dm['Preço Atual']>0 else 0
                                     l_div.append({"Ativo": t, "Unitário (R$)": float(dm_val), "Qtd": int(dm['Qtd']), "Recebido (R$)": float(dm_val * dm['Qtd']), "Yield on Cost (%)": float(yoc), "DY Atual (%)": float(dy)})
                         except: pass
@@ -847,47 +847,50 @@ if not st.session_state.df_base.empty:
                 st.info("Sincronize com o Mercado Vivo para levantar a base histórica completa de dividendos.")
 
         # ==========================================
-        # 9. COMITÊ DE IA (CHAT INTERNO RESTAURADO)
+        # 9. COMITÊ DE IA (CHAT SEGURO & PERMANENTE)
         # ==========================================
         with t6:
             st.markdown("### 💬 Comitê de IA - Análise CNPI Avançada")
-            st.markdown("O comitê está pronto para cruzar os dados de preço teto (Bazin) e o cenário macroeconômico em tempo real.")
             
             if st.button("🗑️ Limpar Histórico do Chat", use_container_width=True):
                 st.session_state.historico_chat = MENSAGEM_INICIAL.copy()
                 if os.path.exists(ARQUIVO_CHAT): os.remove(ARQUIVO_CHAT)
                 st.rerun()
 
-            try: 
-                api_key = st.secrets.get("GEMINI_API_KEY", "")
-            except: 
-                api_key = ""
+            try: api_key = st.secrets.get("GEMINI_API_KEY", "")
+            except: api_key = ""
                 
             if not api_key:
                 api_key = st.text_input("Insira sua Gemini API Key para ativar a IA:", type="password")
                 
-            # Exibe o histórico de conversas primeiro
+            # Exibir mensagens antigas
             for msg in st.session_state.historico_chat:
                 with st.chat_message(msg["role"]): st.write(msg["content"])
                 
+            # REFACTOR: Fluxo síncrono unificado do chat para travar a caixa sempre aberta no rodapé
             if prompt := st.chat_input("Pergunte à Gestora IA...", key="ia_chat_input_unique"):
-                # 1. Salva a nova pergunta no histórico
+                with st.chat_message("user"): st.write(prompt)
                 st.session_state.historico_chat.append({"role": "user", "content": prompt})
                 salvar_chat()
                 
-                # 2. Exibe a pergunta do usuário na tela instantaneamente
-                with st.chat_message("user"): st.write(prompt)
-                
-                # 3. Abre a caixa de resposta da IA e ativa o spinner visualmente
                 with st.chat_message("assistant"):
-                    with st.spinner("O Comitê de IA está cruzando a posição dos ativos com a conjuntura macroeconômica..."):
+                    with st.spinner("O Comitê de IA está processando sua solicitação..."):
                         if 'df_perf_final' in locals() or 'df_perf_final' in globals():
                             ctx_c = df_perf_final[['Ativo', 'Qtd', 'Preço Médio', 'Preço Atual', 'Evolução c/ Div (%)']].to_csv(index=False)
                         else:
-                            ctx_c = "Dados de mercado vivo ainda não conectados. Base estática: " + st.session_state.df_base.to_csv(index=False)
+                            ctx_c = "Nenhum dado ativo de mercado vivo conectado no momento."
                             
                         ctx_m = f"Selic: {f_pct(selic_hoje)}|IPCA: {f_pct(ipca_12m_hoje)}. Focus {ano_atual}: Sel {f_pct(proj_focus.get(f'Selic_{ano_atual}'))}/IPCA {f_pct(proj_focus.get(f'IPCA_{ano_atual}'))}"
-                        sys_prompt = f"Você é um renomado Analista Sênior CNPI. [Dados da Carteira]: {ctx_c}. [Macro]: {ctx_m}. Forneça respostas executivas, profundas, cruze valuations contábeis de Graham/Bazin e emita pareceres claros e acionáveis de compra/manutenção com dicas táticas de alocação de ativos."
+                        
+                        # REFACTOR: Prompt de sistema calibrado para flexibilidade contextual solicitado
+                        sys_prompt = (
+                            f"Você é um renomado Analista Sênior CNPI. "
+                            f"Contexto macroeconômico atual do Brasil: {ctx_m}. "
+                            f"Caso o usuário faça perguntas específicas sobre a carteira dele, utilize estes dados: {ctx_c}. "
+                            f"DIRETRIZ CRÍTICA: Se o usuário fizer uma pergunta genérica sobre economia, finanças, contabilidade ou "
+                            f"indicações de ativos sem citar explicitamente a própria posição dele, responda de forma puramente abrangente, "
+                            f"teórica ou mercadológica. NÃO tente empurrar ou citar a carteira dele de forma forçada se a pergunta for geral."
+                        )
                         
                         resposta = "⚠️ Chave API ausente ou não configurada."
                         if api_key:
@@ -896,9 +899,7 @@ if not st.session_state.df_base.empty:
                                 genai.configure(api_key=api_key)
                                 resp_ok = False
                                 ultimo_erro = ""
-                                
-                                # Modelos homologados e funcionais que forneceram a boa dica de compra
-                                for m in ['gemini-3.5-flash', 'gemini-3.1-flash-lite', 'gemini-2.5-flash', 'gemini-1.5-flash']:
+                                for m in ['gemini-2.5-flash', 'gemini-1.5-pro', 'gemini-1.5-flash']:
                                     try:
                                         resposta = genai.GenerativeModel(m).generate_content([sys_prompt, prompt]).text
                                         resp_ok = True
@@ -908,13 +909,12 @@ if not st.session_state.df_base.empty:
                                         continue
                                         
                                 if not resp_ok:
-                                    resposta = f"⚠️ Falha de comunicação com a API do Gemini. Erro retornado pelo servidor: {ultimo_erro}"
+                                    resposta = f"⚠️ Falha de comunicação com os servidores da IA. Log técnico: {ultimo_erro}"
                             except Exception as e:
-                                resposta = f"⚠️ Erro estrutural ao inicializar a biblioteca de Inteligência Artificial: {e}"
+                                resposta = f"⚠️ Erro estrutural ao inicializar o modelo: {e}"
                         
-                        # 4. Escreve a resposta na tela diretamente (sem dar st.rerun para não quebrar o layout)
                         st.write(resposta)
                         
-                        # 5. Salva a resposta no histórico definitivo
-                        st.session_state.historico_chat.append({"role": "assistant", "content": resposta})
-                        salvar_chat()
+                st.session_state.historico_chat.append({"role": "assistant", "content": resposta})
+                salvar_chat()
+                st.rerun()
