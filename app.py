@@ -245,38 +245,39 @@ def consolidar_carteira(df):
     return pd.DataFrame(linhas)
 
 # ==========================================
-# SCANNER ADAPTATIVO MULTI-LAYOUT B3
+# SCANNER ADAPTATIVO AVANÇADO B3
 # ==========================================
 def corrigir_cabecalho_b3(df):
     if df.empty: return df
     if 'Data do Negócio' in df.columns or 'Data Média' in df.columns: 
         return df
         
-    for i in range(min(20, len(df))):
+    for i in range(min(30, len(df))):
         linha_limpa = df.iloc[i].astype(str).str.strip().str.upper().tolist()
         
-        is_negociacao = any('DATA DO NEGÓCIO' in str(c) or 'DATA DO NEGOCIO' in str(c) for c in linha_limpa)
-        is_movimentacao = any('PRODUTO' in str(c) for c in linha_limpa) and any('MOVIMENTAÇÃO' in str(c) or 'MOVIMENTACAO' in str(c) for c in linha_limpa)
+        # Reconhecimento resiliente por prefixo de colunas financeiras estruturais
+        is_negociacao = any('DATA DO' in str(c) or 'NEGÓCIO' in str(c) or 'NEGOCIO' in str(c) for c in linha_limpa)
+        is_movimentacao = any('PRODUTO' in str(c) or 'ATIVO' in str(c) for c in linha_limpa) and any('MOVIMENTA' in str(c) or 'MOVIMEN' in str(c) for c in linha_limpa)
         
         if is_negociacao or is_movimentacao:
             colunas_reais = df.iloc[i].astype(str).str.strip().tolist()
             df.columns = colunas_reais
             df_sub = df.iloc[i+1:].reset_index(drop=True)
             
-            if is_movimentacao:
-                mapeamento = {}
-                for col in df_sub.columns:
-                    c_up = str(col).strip().upper()
-                    if 'DATA' in c_up: mapeamento[col] = 'Data do Negócio'
-                    elif 'PRODUTO' in c_up: mapeamento[col] = 'Código de Negociação'
-                    elif 'MOVIMENTAÇÃO' in c_up or 'MOVIMENTACAO' in c_up: mapeamento[col] = 'Tipo de Movimentação'
-                    elif 'VALOR' in c_up: mapeamento[col] = 'Valor'
-                    elif 'QUANTIDADE' in c_up: mapeamento[col] = 'Quantidade'
-                    elif 'PREÇO' in c_up or 'PRECO' in c_up: mapeamento[col] = 'Preço Unitário'
-                df_sub = df_sub.rename(columns=mapeamento)
+            mapeamento = {}
+            for col in df_sub.columns:
+                c_up = str(col).strip().upper()
+                if 'DAT' in c_up: mapeamento[col] = 'Data do Negócio'
+                elif 'PROD' in c_up or 'ATIV' in c_up or 'CÓD' in c_up or 'COD' in c_up: mapeamento[col] = 'Código de Negociação'
+                elif 'MOV' in c_up or 'TIP' in c_up: mapeamento[col] = 'Tipo de Movimentação'
+                elif 'VAL' in c_up: mapeamento[col] = 'Valor'
+                elif 'QUA' in c_up or 'QTD' in c_up: mapeamento[col] = 'Quantidade'
+                elif 'PRE' in c_up: mapeamento[col] = 'Preço Unitário'
                 
-                if 'Valor' not in df_sub.columns and 'Preço Unitário' in df_sub.columns:
-                    df_sub['Valor'] = df_sub['Quantidade'].apply(limpar_numero) * df_sub['Preço Unitário'].apply(limpar_numero)
+            df_sub = df_sub.rename(columns=mapeamento)
+            
+            if 'Valor' not in df_sub.columns and 'Preço Unitário' in df_sub.columns and 'Quantidade' in df_sub.columns:
+                df_sub['Valor'] = df_sub['Quantidade'].apply(limpar_numero) * df_sub['Preço Unitário'].apply(limpar_numero)
             return df_sub
     return df
 
@@ -286,12 +287,9 @@ def processar_planilha_b3(df):
     df['Data do Negócio'] = pd.to_datetime(df['Data do Negócio'], dayfirst=True, errors='coerce')
     df['Quantidade'] = df['Quantidade'].apply(limpar_numero)
     
-    if 'Valor' in df.columns:
-        df['Valor'] = df['Valor'].apply(limpar_numero)
-    elif 'Preço Unitário' in df.columns:
-        df['Valor'] = df['Quantidade'] * df['Preço Unitário'].apply(limpar_numero)
-    else:
-        df['Valor'] = 0.0
+    if 'Valor' in df.columns: df['Valor'] = df['Valor'].apply(limpar_numero)
+    elif 'Preço Unitário' in df.columns: df['Valor'] = df['Quantidade'] * df['Preço Unitário'].apply(limpar_numero)
+    else: df['Valor'] = 0.0
 
     df = df.sort_values('Data do Negócio')
     
@@ -311,13 +309,14 @@ def processar_planilha_b3(df):
         
         tipo_mov = str(row['Tipo de Movimentação']).strip().upper()
         
-        # Mapeia dinamicamente tanto ordens normais (Compra) quanto custódia histórica (Credito)
+        # Mapeamento abrangente para compras e entradas de custódia (Crédito)
         if any(term in tipo_mov for term in ['COMPRA', 'CREDITO', 'CRÉDITO', 'LIQUIDAÇÃO', 'LIQUIDACAO', 'TRANSFERENCIA', 'TRANSFERÊNCIA']) or tipo_mov == 'C':
             q_ant, ts_ant = posicoes[ticker]['qtd'], posicoes[ticker]['ts_medio']
             ts_novo = pd.Timestamp(data).timestamp()
             posicoes[ticker]['ts_medio'] = ts_novo if q_ant == 0 else ((ts_ant * q_ant) + (ts_novo * qtd)) / (q_ant + qtd)
             posicoes[ticker]['qtd'] += qtd
             posicoes[ticker]['valor'] += valor
+        # Mapeamento abrangente para vendas e saídas de custódia (Débito)
         elif any(term in tipo_mov for term in ['VENDA', 'DEBITO', 'DÉBITO']) or tipo_mov == 'V':
             if qtd >= (posicoes[ticker]['qtd'] - 0.001): posicoes[ticker] = {'qtd': 0.0, 'valor': 0.0, 'ts_medio': 0.0}
             else:
@@ -361,21 +360,31 @@ if st.sidebar.button("🚀 Processar", use_container_width=True):
     
     if arquivo_principal:
         txt = arquivo_principal.getvalue().decode('utf-8-sig', errors='ignore') if arquivo_principal.name.endswith('.csv') else None
-        df_p = pd.read_csv(io.StringIO(txt), sep=';' if txt and ';' in txt else ',') if txt else pd.read_excel(arquivo_principal)
+        
+        # Detecção avançada de delimitador para arquivos CSV convertidos fora do padrão
+        if txt:
+            linhas_amostra = "".join(txt.split('\n')[:5])
+            sep_detectado = '\t' if linhas_amostra.count('\t') > linhas_amostra.count(';') and linhas_amostra.count('\t') > linhas_amostra.count(',') else (';' if linhas_amostra.count(';') >= linhas_amostra.count(',') else ',')
+            df_p = pd.read_csv(io.StringIO(txt), sep=sep_detectado)
+        else:
+            df_p = pd.read_excel(arquivo_principal)
         
         df_p = corrigir_cabecalho_b3(df_p)
         
-        if 'Data Média' in df_p.columns:
-            base_atual = consolidar_carteira(df_p)
-        elif 'Data do Negócio' in df_p.columns:
-            base_atual = processar_planilha_b3(df_p)
+        if 'Data Média' in df_p.columns: base_atual = consolidar_carteira(df_p)
+        elif 'Data do Negócio' in df_p.columns: base_atual = processar_planilha_b3(df_p)
         else:
-            st.sidebar.error("Formato inválido. Não encontramos colunas padronizadas da B3 ou do Sistema.")
+            st.sidebar.error("Formato inválido. Assegure-se de que a planilha possui colunas nativas da B3.")
             st.stop()
             
     if arquivo_novo and not base_atual.empty:
         txt_n = arquivo_novo.getvalue().decode('utf-8-sig', errors='ignore') if arquivo_novo.name.endswith('.csv') else None
-        df_n = pd.read_csv(io.StringIO(txt_n), sep=';' if txt_n and ';' in txt_n else ',') if txt_n else pd.read_excel(arquivo_novo)
+        if txt_n:
+            linhas_amostra_n = "".join(txt_n.split('\n')[:5])
+            sep_detectado_n = '\t' if linhas_amostra_n.count('\t') > linhas_amostra_n.count(';') and linhas_amostra_n.count('\t') > linhas_amostra_n.count(',') else (';' if linhas_amostra_n.count(';') >= linhas_amostra_n.count(',') else ',')
+            df_n = pd.read_csv(io.StringIO(txt_n), sep=sep_detectado_n)
+        else:
+            df_n = pd.read_excel(arquivo_novo)
         
         df_n = corrigir_cabecalho_b3(df_n)
         
@@ -555,91 +564,69 @@ if not st.session_state.df_base.empty:
             st.plotly_chart(fig_proj, use_container_width=True)
 
         with t4:
-            st.markdown("#### Gráficos da Distribuição")
+            st.markdown("#### Gráficos de Distribuição Patrimonial")
             c_g1, c_g2 = st.columns(2)
             c_g1.plotly_chart(px.pie(df_perf_final, values='Saldo Atual', names='Ativo', title="Por Ativo"), use_container_width=True)
             c_g2.plotly_chart(px.pie(df_perf_final, values='Saldo Atual', names='Setor', title="Por Setor"), use_container_width=True)
             
             st.markdown("---")
-            st.markdown("#### 📊 Rentabilidade: Ativos vs Benchmarks (CDI e IPCA)")
-            st.markdown("Configure os filtros abaixo para customizar a visão temporal e de ativos.")
+            st.markdown("#### 📈 Gráfico Dinâmico Comparativo Histórico (Linhas)")
             
-            # FILTROS DINÂMICOS RESTAURADOS
-            c_f_g1, c_f_g2 = st.columns(2)
-            ativos_disp = sorted(df_perf_final['Ativo'].unique().tolist())
-            ativos_sel = c_f_g1.multiselect("Selecione os Ativos para o gráfico:", options=ativos_disp, default=ativos_disp)
+            # NOVO: Controlos dinâmicos avançados restaurados conforme solicitado
+            ativos_disponiveis = sorted(df_perf_final['Ativo'].unique().tolist())
+            ativo_selecionado = st.selectbox("Escolha o Ativo para Análise Histórica:", ativos_disponiveis)
             
-            indicadores_disp = ['Carteira (c/ Div)', 'CDI', 'IPCA']
-            indicadores_sel = c_f_g2.multiselect("Selecione os Indicadores para exibir:", options=indicadores_disp, default=indicadores_disp)
+            indexadores_selecionados = st.multiselect("Escolha os Indexadores para Comparação:", ['CDI', 'IPCA'], default=['CDI', 'IPCA'])
             
-            tipo_janela = st.radio("Definição do Período Temporal:", ["Desde a Data de Compra de cada Ativo", "Definir Período Manual (Customizado)"], horizontal=True)
+            janela_temporal = st.radio("Período de Leitura do Gráfico:", ["Desde a Data de Compra deste Ativo (Automático)", "Definir Período Customizado (Manual)"], horizontal=True)
             
-            if tipo_janela == "Desde a Data de Compra de cada Ativo":
-                if ativos_sel and indicadores_sel:
-                    df_comp = df_perf_final[df_perf_final['Ativo'].isin(ativos_sel)][['Ativo', 'Evolução c/ Div (%)', 'CDI Acum. (%)', 'IPCA Acum. (%)']].copy()
-                    df_comp = df_comp.rename(columns={'Evolução c/ Div (%)': 'Carteira (c/ Div)', 'CDI Acum. (%)': 'CDI', 'IPCA Acum. (%)': 'IPCA'})
-                    
-                    colunas_manter = ['Ativo'] + [ind for ind in indicadores_sel if ind in df_comp.columns]
-                    df_comp = df_comp[colunas_manter]
-                    df_melt = df_comp.melt(id_vars='Ativo', var_name='Indicador', value_name='Rentabilidade (%)')
-                    
-                    fig_comp = px.bar(
-                        df_melt, x='Ativo', y='Rentabilidade (%)', color='Indicador', barmode='group',
-                        color_discrete_map={'Carteira (c/ Div)': '#1f77b4', 'CDI': '#ff7f0e', 'IPCA': '#2ca02c'},
-                        title="Rentabilidade Acumulada desde a Aquisição"
-                    )
-                    st.plotly_chart(fig_comp, use_container_width=True)
+            data_compra_real = st.session_state.dados_mercado[ativo_selecionado]['Data'].date()
+            
+            if janela_temporal == "Desde a Data de Compra deste Ativo (Automático)":
+                dt_inicial = data_compra_real
+                dt_final = pd.Timestamp.now().date()
+                st.info(f"Análise configurada automaticamente desde a data de aquisição do ativo: {dt_inicial.strftime('%d/%m/%Y')}")
             else:
-                # CÁLCULO DINÂMICO PARA PERÍODO MANUAL
-                c_d1, c_d2 = st.columns(2)
-                d_inicio = c_d1.date_input("Data Inicial:", pd.Timestamp.now().date() - pd.Timedelta(days=365))
-                d_fim = c_d2.date_input("Data Final:", pd.Timestamp.now().date())
+                c_dt1, c_dt2 = st.columns(2)
+                dt_inicial = c_dt1.date_input("De:", data_compra_real)
+                dt_final = c_dt2.date_input("Até:", pd.Timestamp.now().date())
                 
-                if st.button("Calcular Intervalo Customizado", use_container_width=True):
-                    if ativos_sel and indicadores_sel:
-                        with st.spinner("Processando fechamentos e indexadores históricos..."):
-                            df_macro = carregar_macro()
-                            cdi_m, ipca_m = 0.0, 0.0
-                            if not df_macro.empty:
-                                try:
-                                    filtro_macro = df_macro.loc[d_inicio:d_fim]
-                                    cdi_m = ((1 + filtro_macro['CDI'].dropna()).prod() - 1) * 100
-                                    ipca_m = ((1 + filtro_macro['IPCA'].dropna()).prod() - 1) * 100
-                                except: pass
+            if st.button("Gerar Curva de Evolução Histórica", use_container_width=True):
+                with st.spinner("Buscando cotações históricas e calculando indexadores..."):
+                    historico_precos = yf.Ticker(f"{ativo_selecionado}.SA").history(start=dt_inicial, end=dt_final)
+                    
+                    if not historico_precos.empty:
+                        df_linhas_evol = pd.DataFrame(index=historico_precos.index)
+                        
+                        # Evolução nominal base 100 do ativo selecionado
+                        preco_referencia = historico_precos['Close'].iloc[0]
+                        df_linhas_evol[ativo_selecionado] = (historico_precos['Close'] / preco_referencia) * 100
+                        
+                        df_macro = carregar_macro()
+                        if not df_macro.empty:
+                            filtro_macro_g = df_macro.loc[dt_inicial:dt_final]
+                            
+                            if 'CDI' in indexadores_selecionados:
+                                cdi_fator = (1 + filtro_macro_g['CDI']).cumprod() * 100
+                                df_linhas_evol['CDI'] = cdi_fator.reindex(df_linhas_evol.index, method='ffill').fillna(100)
                                 
-                            linhas_m_res = []
-                            for t in ativos_sel:
-                                r_ativo = 0.0
-                                try:
-                                    h_ticker = yf.Ticker(f"{t}.SA").history(start=d_inicio, end=d_fim)
-                                    if not h_ticker.empty and len(h_ticker) >= 2:
-                                        p_ini = h_ticker['Close'].iloc[0]
-                                        p_fim = h_ticker['Close'].iloc[-1]
-                                        d_periodo = 0.0
-                                        try:
-                                            all_divs = yf.Ticker(f"{t}.SA").dividends
-                                            if not all_divs.empty:
-                                                if all_divs.index.tz is not None: all_divs.index = all_divs.index.tz_localize(None)
-                                                d_periodo = all_divs[(all_divs.index >= pd.Timestamp(d_inicio)) & (all_divs.index <= pd.Timestamp(d_fim))].sum()
-                                        except: pass
-                                        r_ativo = ((p_fim + d_periodo) / p_ini - 1) * 100
-                                except: pass
+                            if 'IPCA' in indexadores_selecionados:
+                                ipca_fator = (1 + filtro_macro_g['IPCA']).cumprod() * 100
+                                df_linhas_evol['IPCA'] = ipca_fator.reindex(df_linhas_evol.index, method='ffill').fillna(100)
                                 
-                                item_m = {'Ativo': t}
-                                if 'Carteira (c/ Div)' in indicadores_sel: item_m['Carteira (c/ Div)'] = r_ativo
-                                if 'CDI' in indicadores_sel: item_m['CDI'] = cdi_m
-                                if 'IPCA' in indicadores_sel: item_m['IPCA'] = ipca_m
-                                linhas_m_res.append(item_m)
-                                
-                            df_m_plot = pd.DataFrame(linhas_m_res)
-                            if not df_m_plot.empty:
-                                df_melt_m = df_m_plot.melt(id_vars='Ativo', var_name='Indicador', value_name='Rentabilidade (%)')
-                                fig_comp_m = px.bar(
-                                    df_melt_m, x='Ativo', y='Rentabilidade (%)', color='Indicador', barmode='group',
-                                    color_discrete_map={'Carteira (c/ Div)': '#1f77b4', 'CDI': '#ff7f0e', 'IPCA': '#2ca02c'},
-                                    title=f"Desempenho de {d_inicio.strftime('%d/%m/%Y')} até {d_fim.strftime('%d/%m/%Y')}"
-                                )
-                                st.plotly_chart(fig_comp_m, use_container_width=True)
+                        df_linhas_evol = df_linhas_evol.reset_index()
+                        df_linhas_evol['Date'] = df_linhas_evol['Date'].dt.date
+                        
+                        colunas_plot = [ativo_selecionado] + indexadores_selecionados
+                        df_melted_plot = df_linhas_evol.melt(id_vars='Date', value_vars=colunas_plot, var_name='Ativo/Benchmark', value_name='Evolução (Base 100)')
+                        
+                        fig_linhas_final = px.line(
+                            df_melted_plot, x='Date', y='Evolução (Base 100)', color='Ativo/Benchmark',
+                            title=f"Desempenho Real de {ativo_selecionado} vs Indexadores Selecionados"
+                        )
+                        st.plotly_chart(fig_linhas_final, use_container_width=True)
+                    else:
+                        st.error("Sem dados de cotação disponíveis para este intervalo no Yahoo Finance.")
 
         with t5:
             st.markdown("### 💸 Proventos (Mensais e Exportação)")
