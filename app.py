@@ -148,7 +148,7 @@ if not st.session_state.logged_in:
 st.title(f"📊 Terminal de Gestão - Analista: {st.session_state.username.upper()} ({pd.Timestamp.now().strftime('%d/%m/%Y')})")
 
 ARQUIVO_CHAT = f"historico_ia_{st.session_state.username}.json"
-MENSAGEM_INICIAL = [{"role": "assistant", "content": f"Saudações, {st.session_state.username}. O terminal está mapeado em tempo real."}]
+MENSAGEM_INICIAL = [{"role": "assistant", "content": f"Saudações, {st.session_state.username}. O terminal está mapeado em tempo real. Como posso ajudar com a sua carteira hoje?"}]
 
 if 'historico_chat' not in st.session_state:
     if os.path.exists(ARQUIVO_CHAT):
@@ -365,7 +365,6 @@ def to_excel(df, sheet_name='Sheet1'):
         from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
         from openpyxl.utils import get_column_letter
         
-        # Estilos Corporativos Elegantes (Azul Escuro e Branco)
         header_fill = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
         header_font = Font(name="Arial", size=11, bold=True, color="FFFFFF")
         thin_border = Border(
@@ -376,13 +375,11 @@ def to_excel(df, sheet_name='Sheet1'):
         )
         
         for col_num, column in enumerate(worksheet.columns, 1):
-            # Cabeçalho Superior
             cell = worksheet.cell(row=1, column=col_num)
             cell.fill = header_fill
             cell.font = header_font
             cell.alignment = Alignment(horizontal="center", vertical="center")
             
-            # Alinhamento das linhas de dados e bordas
             for row_num in range(2, worksheet.max_row + 1):
                 data_cell = worksheet.cell(row=row_num, column=col_num)
                 data_cell.font = Font(name="Arial", size=10)
@@ -392,7 +389,6 @@ def to_excel(df, sheet_name='Sheet1'):
                 else:
                     data_cell.alignment = Alignment(horizontal="center")
             
-            # Auto-ajuste inteligente de largura
             max_len = max(len(str(c.value or '')) for c in column)
             col_letter = get_column_letter(col_num)
             worksheet.column_dimensions[col_letter].width = max(max_len + 4, 13)
@@ -581,10 +577,9 @@ if not st.session_state.df_base.empty:
         with t2:
             st.markdown("#### Métodos Certificados de Valuation")
             
-            # REFACTOR: Explicações Simplificadas para Iniciantes (Tooltips Mantidos)
             st.markdown("""
             * **Preço Teto Decio Bazin:** Avalia se a empresa paga bons dividendos hoje. Ele calcula o preço máximo ideal para você comprar a ação e garantir um retorno mínimo em dinheiro todo ano. É igual a calcular o valor justo do aluguel de um imóvel.
-            * **Preço Justo Benjamin Graham:** Avalia o valor real de fábrica da empresa com base no patrimônio que ela possui e no lucro que gera. Ele indica se o preço da ação na Bolsa está barato ou caro comparado ao tamanho físico e contábil dela. É igual a descobrir se um carro usado está abaixo da tabela FIPE. *Aplicável apenas a Ações.*
+            * **Preço Justo Benjamin Graham:** Avalia o valor real de fábrica da empresa com base no patrimônio que ela possui e no lucro que gera. Ele indica se o preço da ação na Bolsa está barato ou caro comparado ao tamanho físico e contábil dela. É igual a descobrir se um carro usado está abaixo da tabela FIPE. *Como FIIs funcionam por outra dinâmica imobiliária, este método não se aplica a eles.*
             """)
             yd = st.number_input("Taxa de Retorno Mínima Exigida Bazin (%):", value=6.0, step=0.5, help="O percentual mínimo de dividendos que você deseja receber em dinheiro vivo todo ano.") / 100.0
             
@@ -621,7 +616,6 @@ if not st.session_state.df_base.empty:
             c_p1, c_p2, c_p3, c_p4 = st.columns(4)
             patr_fora = c_p1.number_input("Patrimônio Externo (R$):", value=0.0, step=1000.0, help="Capital fora de custódia pronto para aporte.")
             
-            # REFACTOR: Input de aporte mensal ativo e responsivo
             aporte = c_p2.number_input("Aporte Mensal Previsto (R$):", value=2000.0, step=500.0, help="Valor líquido direcionado a novos investimentos mensais.")
             rent = c_p3.number_input("Rentabilidade Mensal Alvo (%):", value=0.8, step=0.1) / 100.0
             cresc_div = c_p4.number_input("Crescimento Anual de Dividendos (%):", value=5.0, step=1.0) / 100.0
@@ -804,7 +798,7 @@ if not st.session_state.df_base.empty:
                                 if divs.index.tz is not None: divs.index = divs.index.tz_localize(None)
                                 dm_val = divs[(divs.index.month == m_sel) & (divs.index.year == a_sel)].sum()
                                 if dm_val > 0:
-                                    yoc = ((dm_val * dm['Qtd']) / (dm['Qtd'] * dm['PM'])) * 100 if dm['PM']>0 else 0
+                                    yoc = ((get_val := dm_val * dm['Qtd']) / (dm['Qtd'] * dm['PM'])) * 100 if dm['PM']>0 else 0
                                     dy = (dm_val / dm['Preço Atual']) * 100 if dm['Preço Atual']>0 else 0
                                     l_div.append({"Ativo": t, "Unitário (R$)": float(dm_val), "Qtd": int(dm['Qtd']), "Recebido (R$)": float(dm_val * dm['Qtd']), "Yield on Cost (%)": float(yoc), "DY Atual (%)": float(dy)})
                         except: pass
@@ -816,14 +810,10 @@ if not st.session_state.df_base.empty:
                 st.dataframe(df_d.style.format({"Unitário (R$)": f_brl_4, "Recebido (R$)": f_brl, "Yield on Cost (%)": f_pct, "DY Atual (%)": f_pct}), use_container_width=True, hide_index=True)
                 st.success(f"**Total {meses_map[st.session_state.divs_m]}/{st.session_state.divs_a}:** {f_brl(df_d['Recebido (R$)'].sum())}")
                 
-                # REFACTOR: Download formatado em Excel sênior ativo
                 xls = to_excel(df_d, sheet_name=f"Proventos_{meses_map[st.session_state.divs_m]}")
                 st.download_button(label="📥 Baixar Relatório de Proventos Mensal (Excel)", data=xls, file_name=f"Proventos_{st.session_state.username}_{meses_map[st.session_state.divs_m]}_{st.session_state.divs_a}.xlsx", mime="application/vnd.ms-excel", use_container_width=True)
             elif df_d is not None: st.info("Sem proventos no período selecionado.")
 
-            # ==========================================
-            # NOVO BLCO: HISTÓRICO GLOBAL DESDE O INÍCIO
-            # ==========================================
             st.markdown("---")
             st.markdown("### 🏛️ Histórico Analítico de Proventos (Desde o Início)")
             
@@ -840,19 +830,13 @@ if not st.session_state.df_base.empty:
                             yoc = (tot_rec / investido) * 100 if investido > 0 else 0
                             dy = (val / dm['Preço Atual']) * 100 if dm['Preço Atual'] > 0 else 0
                             l_hist.append({
-                                "Data Ex": d_idx.date(),
-                                "Ativo": t,
-                                "Unitário (R$)": float(val),
-                                "Quantidade": int(dm['Qtd']),
-                                "Recebido (R$)": float(tot_rec),
-                                "Yield on Cost (%)": float(yoc),
-                                "DY Atual (%)": float(dy)
+                                "Data Ex": d_idx.date(), "Ativo": t, "Unitário (R$)": float(val), "Quantidade": int(dm['Qtd']),
+                                "Recebido (R$)": float(tot_rec), "Yield on Cost (%)": float(yoc), "DY Atual (%)": float(dy)
                             })
                 except: pass
                 
             if l_hist:
                 df_hist_total = pd.DataFrame(l_hist).sort_values("Data Ex", ascending=False)
-                
                 c_h1, c_h2 = st.columns(2)
                 ativos_hist_disp = sorted(df_hist_total['Ativo'].unique().tolist())
                 ativos_hist_sel = c_h1.multiselect("Filtrar Histórico por Ativo:", options=ativos_hist_disp, default=ativos_hist_disp)
@@ -876,53 +860,61 @@ if not st.session_state.df_base.empty:
             else:
                 st.info("Sincronize com o Mercado Vivo para levantar a base histórica completa de dividendos.")
 
+        # ==========================================
+        # 9. COMITÊ DE IA (CHAT INTERNO RESTAURADO)
+        # ==========================================
         with t6:
-            st.info("Utilize a caixa de chat abaixo para análise da carteira com IA.")
+            st.markdown("### 💬 Comitê de IA - Análise CNPI Avançada")
+            st.markdown("O comitê está pronto para cruzar os dados de preço teto (Bazin) e o cenário macroeconômico em tempo real.")
+            
+            if st.button("🗑️ Limpar Histórico do Chat", use_container_width=True):
+                st.session_state.historico_chat = MENSAGEM_INICIAL.copy()
+                if os.path.exists(ARQUIVO_CHAT): os.remove(ARQUIVO_CHAT)
+                st.rerun()
 
-# ==========================================
-# 9. COMITÊ DE IA (CHAT)
-# ==========================================
-st.write("---")
-cc1, cc2 = st.columns([10, 2])
-with cc1: st.markdown("### 💬 Comitê de IA")
-with cc2:
-    if st.button("🗑️ Limpar Chat", use_container_width=True):
-        st.session_state.historico_chat = MENSAGEM_INICIAL.copy()
-        if os.path.exists(ARQUIVO_CHAT): os.remove(ARQUIVO_CHAT)
-        st.rerun()
-
-try: api_key = st.secrets["GEMINI_API_KEY"]
-except: api_key = st.text_input("Gemini API Key:", type="password")
-
-for msg in st.session_state.historico_chat:
-    with st.chat_message(msg["role"]): st.write(msg["content"])
-    
-if prompt := st.chat_input("Pergunte à Gestora IA..."):
-    st.session_state.historico_chat.append({"role": "user", "content": prompt})
-    salvar_chat()
-    with st.chat_message("user"): st.write(prompt)
-    
-    # REFACTOR: Feedback visual ativo para impedir sensação de travamento na IA
-    with st.spinner("O Comitê de IA está cruzando a posição dos ativos com a conjuntura macroeconômica..."):
-        ctx_c = "Vazia." if st.session_state.df_base.empty else df_perf_final[['Ativo', 'Qtd', 'Preço Médio', 'Preço Atual', 'Evolução c/ Div (%)']].to_csv(index=False)
-        ctx_m = f"Selic: {f_pct(selic_hoje)}|IPCA: {f_pct(ipca_12m_hoje)}. Focus {ano_atual}: Sel {f_pct(proj_focus.get(f'Selic_{ano_atual}'))}/IPCA {f_pct(proj_focus.get(f'IPCA_{ano_atual}'))}"
-        sys_prompt = f"Você é Analista Sênior CNPI. [Dados]: {ctx_c}. [Macro]: {ctx_m}. Seja executiva, cruze dados."
-        
-        if api_key:
-            try:
-                import google.generativeai as genai
-                genai.configure(api_key=api_key)
-                resp_ok = False
-                for m in ['gemini-3.5-flash', 'gemini-3.1-flash-lite', 'gemini-2.5-flash', 'gemini-1.5-flash']:
-                    try:
-                        resposta = genai.GenerativeModel(m).generate_content([sys_prompt, prompt]).text
-                        resp_ok = True
-                        break 
-                    except: continue
-                if not resp_ok: resposta = "⚠️ Falha de rede com a IA do Google."
-            except Exception as e: resposta = f"⚠️ Erro estrutural: {e}"
-        else: resposta = "⚠️ Chave API ausente."
-        
-    st.session_state.historico_chat.append({"role": "assistant", "content": resposta})
-    salvar_chat()
-    st.rerun()
+            # CORREÇÃO DEFINITIVA DO NAMEERROR: REATRIBUIÇÃO DA API KEY
+            try: 
+                api_key = st.secrets.get("GEMINI_API_KEY", "")
+            except: 
+                api_key = ""
+                
+            if not api_key:
+                api_key = st.text_input("Insira sua Gemini API Key para ativar a IA:", type="password")
+                
+            for msg in st.session_state.historico_chat:
+                with st.chat_message(msg["role"]): st.write(msg["content"])
+                
+            if prompt := st.chat_input("Pergunte à Gestora IA...", key="ia_chat_input_unique"):
+                st.session_state.historico_chat.append({"role": "user", "content": prompt})
+                salvar_chat()
+                
+                # ADIÇÃO: Mostra a mensagem do usuário na tela ANTES de carregar o spinner
+                with st.chat_message("user"): st.write(prompt)
+                
+                with st.spinner("O Comitê de IA está cruzando a posição dos ativos com a conjuntura macroeconômica..."):
+                    if 'df_perf_final' in locals() or 'df_perf_final' in globals():
+                        ctx_c = df_perf_final[['Ativo', 'Qtd', 'Preço Médio', 'Preço Atual', 'Evolução c/ Div (%)']].to_csv(index=False)
+                    else:
+                        ctx_c = "Dados de mercado vivo ainda não conectados. Base estática: " + st.session_state.df_base.to_csv(index=False)
+                        
+                    ctx_m = f"Selic: {f_pct(selic_hoje)}|IPCA: {f_pct(ipca_12m_hoje)}. Focus {ano_atual}: Sel {f_pct(proj_focus.get(f'Selic_{ano_atual}'))}/IPCA {f_pct(proj_focus.get(f'IPCA_{ano_atual}'))}"
+                    sys_prompt = f"Você é um renomado Analista Sênior CNPI. [Dados da Carteira]: {ctx_c}. [Macro]: {ctx_m}. Forneça respostas executivas, de alto nível, cruze valuations de Graham/Bazin e traga insights acionáveis de compra/manutenção com dicas táticas de alocação."
+                    
+                    resposta = "⚠️ Chave API ausente ou inválida."
+                    if api_key:
+                        try:
+                            import google.generativeai as genai
+                            genai.configure(api_key=api_key)
+                            resp_ok = False
+                            for m in ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-1.0-pro']:
+                                try:
+                                    resposta = genai.GenerativeModel(m).generate_content([sys_prompt, prompt]).text
+                                    resp_ok = True
+                                    break 
+                                except: continue
+                            if not resp_ok: resposta = "⚠️ Falha de comunicação com os servidores da IA."
+                        except Exception as e: resposta = f"⚠️ Erro na execução do modelo: {e}"
+                        
+                st.session_state.historico_chat.append({"role": "assistant", "content": resposta})
+                salvar_chat()
+                st.rerun()
