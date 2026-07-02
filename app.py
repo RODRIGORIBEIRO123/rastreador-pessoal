@@ -244,9 +244,6 @@ def consolidar_carteira(df):
         linhas.append({"Ativo": ativo, "Quantidade": qtd, "Preço Médio": float(pm), "Data Média": pd.to_datetime(soma_tempo/qtd, unit='s').date() if qtd>0 else pd.Timestamp.now().date()})
     return pd.DataFrame(linhas)
 
-# ==========================================
-# SCANNER ADAPTATIVO AVANÇADO B3
-# ==========================================
 def corrigir_cabecalho_b3(df):
     if df.empty: return df
     if 'Data do Negócio' in df.columns or 'Data Média' in df.columns: 
@@ -355,9 +352,51 @@ def processar_planilha_b3(df):
     ativos = [{"Ativo": t, "Quantidade": d['qtd'], "Preço Médio": d['valor']/d['qtd'] if d['qtd']>0 else 0, "Data Média": pd.to_datetime(d['ts_medio'], unit='s').date()} for t, d in posicoes.items() if d['qtd']>0]
     return consolidar_carteira(pd.DataFrame(ativos))
 
+# ==========================================
+# REFACTOR: GERADOR DE EXCEL FORMATADO SÊNIOR
+# ==========================================
 def to_excel(df, sheet_name='Sheet1'):
     output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='openpyxl') as writer: df.to_excel(writer, index=False, sheet_name=sheet_name)
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False, sheet_name=sheet_name)
+        workbook  = writer.book
+        worksheet = writer.sheets[sheet_name]
+        
+        from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+        from openpyxl.utils import get_column_letter
+        
+        # Estilos Corporativos Elegantes (Azul Escuro e Branco)
+        header_fill = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
+        header_font = Font(name="Arial", size=11, bold=True, color="FFFFFF")
+        thin_border = Border(
+            left=Side(style='thin', color='D9D9D9'),
+            right=Side(style='thin', color='D9D9D9'),
+            top=Side(style='thin', color='D9D9D9'),
+            bottom=Side(style='thin', color='D9D9D9')
+        )
+        
+        for col_num, column in enumerate(worksheet.columns, 1):
+            # Cabeçalho Superior
+            cell = worksheet.cell(row=1, column=col_num)
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+            
+            # Alinhamento das linhas de dados e bordas
+            for row_num in range(2, worksheet.max_row + 1):
+                data_cell = worksheet.cell(row=row_num, column=col_num)
+                data_cell.font = Font(name="Arial", size=10)
+                data_cell.border = thin_border
+                if isinstance(data_cell.value, (int, float)):
+                    data_cell.alignment = Alignment(horizontal="right")
+                else:
+                    data_cell.alignment = Alignment(horizontal="center")
+            
+            # Auto-ajuste inteligente de largura
+            max_len = max(len(str(c.value or '')) for c in column)
+            col_letter = get_column_letter(col_num)
+            worksheet.column_dimensions[col_letter].width = max(max_len + 4, 13)
+            
     return output.getvalue()
 
 # ==========================================
@@ -541,11 +580,13 @@ if not st.session_state.df_base.empty:
 
         with t2:
             st.markdown("#### Métodos Certificados de Valuation")
+            
+            # REFACTOR: Explicações Simplificadas para Iniciantes (Tooltips Mantidos)
             st.markdown("""
-            * **Preço Teto Decio Bazin:** Focado em Renda. Divide o dividendo anual projetado pela taxa mínima de retorno exigida.
-            * **Preço Justo Benjamin Graham:** Focado em Valor Intrínseco. Dado pela fórmula $\sqrt{22.5 \times LPA \times VPA}$. *Aplicável apenas a Ações.*
+            * **Preço Teto Decio Bazin:** Avalia se a empresa paga bons dividendos hoje. Ele calcula o preço máximo ideal para você comprar a ação e garantir um retorno mínimo em dinheiro todo ano. É igual a calcular o valor justo do aluguel de um imóvel.
+            * **Preço Justo Benjamin Graham:** Avalia o valor real de fábrica da empresa com base no patrimônio que ela possui e no lucro que gera. Ele indica se o preço da ação na Bolsa está barato ou caro comparado ao tamanho físico e contábil dela. É igual a descobrir se um carro usado está abaixo da tabela FIPE. *Aplicável apenas a Ações.*
             """)
-            yd = st.number_input("Taxa de Retorno Mínima Exigida Bazin (%):", value=6.0, step=0.5, help="Dividend Yield anual mínimo desejado.") / 100.0
+            yd = st.number_input("Taxa de Retorno Mínima Exigida Bazin (%):", value=6.0, step=0.5, help="O percentual mínimo de dividendos que você deseja receber em dinheiro vivo todo ano.") / 100.0
             
             df_edit_v = st.data_editor(st.session_state.df_simul[["Ativo", "Cotação Atual", "Div. Projetado (R$)", "VPA (Contábil)", "LPA Projetado"]], use_container_width=True, hide_index=True, disabled=["Ativo", "Cotação Atual"])
             st.session_state.df_simul[["Div. Projetado (R$)", "VPA (Contábil)", "LPA Projetado"]] = df_edit_v[["Div. Projetado (R$)", "VPA (Contábil)", "LPA Projetado"]]
@@ -579,14 +620,16 @@ if not st.session_state.df_base.empty:
             st.markdown("##### Parametrização do Radar Operacional")
             c_p1, c_p2, c_p3, c_p4 = st.columns(4)
             patr_fora = c_p1.number_input("Patrimônio Externo (R$):", value=0.0, step=1000.0, help="Capital fora de custódia pronto para aporte.")
+            
+            # REFACTOR: Input de aporte mensal ativo e responsivo
             aporte = c_p2.number_input("Aporte Mensal Previsto (R$):", value=2000.0, step=500.0, help="Valor líquido direcionado a novos investimentos mensais.")
             rent = c_p3.number_input("Rentabilidade Mensal Alvo (%):", value=0.8, step=0.1) / 100.0
             cresc_div = c_p4.number_input("Crescimento Anual de Dividendos (%):", value=5.0, step=1.0) / 100.0
 
             st.markdown("##### 🎯 Triagem Estratégica Corporativa")
             c_m1, c_m2 = st.columns(2)
-            mb_ex = c_m1.number_input("Margem Mínima Bazin Exigida (%):", value=5.0, help="Sinaliza COMPRA se o desconto em relação ao Preço Teto for superior a este patamar.")
-            mg_ex = c_m2.number_input("Margem Mínima Graham Exigida (%):", value=15.0, help="Sinaliza COMPRA se o desconto em relação ao Preço Justo de Graham for superior a este patamar. Ignorado para FIIs.")
+            mb_ex = c_m1.number_input("Margem Mínima Bazin Exigida (%):", value=5.0, help="Gera sinal de COMPRA se a margem de desconto da ação perante o Preço Teto de Bazin for maior que este valor.")
+            mg_ex = c_m2.number_input("Margem Mínima Graham Exigida (%):", value=15.0, help="Gera sinal de COMPRA se a margem de desconto da ação perante o Preço Contábil de Graham for maior que este valor. Ignorado em FIIs.")
             
             df_radar = pd.merge(df_perf_final[['Ativo', 'Tipo', 'Preço Atual']], st.session_state.df_recs_val, on='Ativo')
             
@@ -741,7 +784,7 @@ if not st.session_state.df_base.empty:
                         st.warning("Selecione ao menos um ativo para visualizar o gráfico.")
 
         with t5:
-            st.markdown("### 💸 Proventos (Mensais e Exportação)")
+            st.markdown("### 💸 Proventos Mensais")
             c_f1, c_f2, c_btn = st.columns([2, 2, 2])
             meses_map = {1:"Janeiro",2:"Fevereiro",3:"Março",4:"Abril",5:"Maio",6:"Junho",7:"Julho",8:"Agosto",9:"Setembro",10:"Outubro",11:"Novembro",12:"Dezembro"}
             m_hoje, a_hoje = pd.Timestamp.now().month, pd.Timestamp.now().year
@@ -773,9 +816,65 @@ if not st.session_state.df_base.empty:
                 st.dataframe(df_d.style.format({"Unitário (R$)": f_brl_4, "Recebido (R$)": f_brl, "Yield on Cost (%)": f_pct, "DY Atual (%)": f_pct}), use_container_width=True, hide_index=True)
                 st.success(f"**Total {meses_map[st.session_state.divs_m]}/{st.session_state.divs_a}:** {f_brl(df_d['Recebido (R$)'].sum())}")
                 
+                # REFACTOR: Download formatado em Excel sênior ativo
                 xls = to_excel(df_d, sheet_name=f"Proventos_{meses_map[st.session_state.divs_m]}")
-                st.download_button(label="📥 Baixar Relatório de Proventos (Excel)", data=xls, file_name=f"Proventos_{st.session_state.username}_{meses_map[st.session_state.divs_m]}_{st.session_state.divs_a}.xlsx", mime="application/vnd.ms-excel", use_container_width=True)
+                st.download_button(label="📥 Baixar Relatório de Proventos Mensal (Excel)", data=xls, file_name=f"Proventos_{st.session_state.username}_{meses_map[st.session_state.divs_m]}_{st.session_state.divs_a}.xlsx", mime="application/vnd.ms-excel", use_container_width=True)
             elif df_d is not None: st.info("Sem proventos no período selecionado.")
+
+            # ==========================================
+            # NOVO BLCO: HISTÓRICO GLOBAL DESDE O INÍCIO
+            # ==========================================
+            st.markdown("---")
+            st.markdown("### 🏛️ Histórico Analítico de Proventos (Desde o Início)")
+            
+            l_hist = []
+            for t, dm in st.session_state.dados_mercado.items():
+                try:
+                    divs = yf.Ticker(f"{t}.SA").dividends
+                    if not divs.empty:
+                        if divs.index.tz is not None: divs.index = divs.index.tz_localize(None)
+                        divs_filtrados = divs[divs.index >= pd.Timestamp(dm['Data'])]
+                        for d_idx, val in divs_filtrados.items():
+                            tot_rec = val * dm['Qtd']
+                            investido = dm['Qtd'] * dm['PM']
+                            yoc = (tot_rec / investido) * 100 if investido > 0 else 0
+                            dy = (val / dm['Preço Atual']) * 100 if dm['Preço Atual'] > 0 else 0
+                            l_hist.append({
+                                "Data Ex": d_idx.date(),
+                                "Ativo": t,
+                                "Unitário (R$)": float(val),
+                                "Quantidade": int(dm['Qtd']),
+                                "Recebido (R$)": float(tot_rec),
+                                "Yield on Cost (%)": float(yoc),
+                                "DY Atual (%)": float(dy)
+                            })
+                except: pass
+                
+            if l_hist:
+                df_hist_total = pd.DataFrame(l_hist).sort_values("Data Ex", ascending=False)
+                
+                c_h1, c_h2 = st.columns(2)
+                ativos_hist_disp = sorted(df_hist_total['Ativo'].unique().tolist())
+                ativos_hist_sel = c_h1.multiselect("Filtrar Histórico por Ativo:", options=ativos_hist_disp, default=ativos_hist_disp)
+                
+                min_date_h = min(df_hist_total['Data Ex'])
+                max_date_h = max(df_hist_total['Data Ex'])
+                range_hist_sel = c_h2.date_input("Filtrar Histórico por Período:", value=(min_date_h, max_date_h))
+                
+                df_hist_filtrado = df_hist_total[df_hist_total['Ativo'].isin(ativos_hist_sel)]
+                if isinstance(range_hist_sel, tuple) and len(range_hist_sel) == 2:
+                    df_hist_filtrado = df_hist_filtrado[(df_hist_filtrado['Data Ex'] >= range_hist_sel[0]) & (df_hist_filtrado['Data Ex'] <= range_hist_sel[1])]
+                    
+                if not df_hist_filtrado.empty:
+                    st.dataframe(df_hist_filtrado.style.format({"Unitário (R$)": f_brl_4, "Recebido (R$)": f_brl, "Yield on Cost (%)": f_pct, "DY Atual (%)": f_pct}), use_container_width=True, hide_index=True)
+                    st.success(f"**Soma de Proventos Históricos Filtrados:** {f_brl(df_hist_filtrado['Recebido (R$)'].sum())}")
+                    
+                    xls_hist = to_excel(df_hist_filtrado, sheet_name="Historico_Proventos")
+                    st.download_button(label="📥 Baixar Histórico de Proventos Filtrado (Excel)", data=xls_hist, file_name=f"Historico_Proventos_{st.session_state.username}.xlsx", mime="application/vnd.ms-excel", use_container_width=True)
+                else:
+                    st.info("Nenhum provento localizado para os filtros informados.")
+            else:
+                st.info("Sincronize com o Mercado Vivo para levantar a base histórica completa de dividendos.")
 
         with t6:
             st.info("Utilize a caixa de chat abaixo para análise da carteira com IA.")
@@ -803,25 +902,27 @@ if prompt := st.chat_input("Pergunte à Gestora IA..."):
     salvar_chat()
     with st.chat_message("user"): st.write(prompt)
     
-    ctx_c = "Vazia." if st.session_state.df_base.empty else df_perf_final[['Ativo', 'Qtd', 'Preço Médio', 'Preço Atual', 'Evolução c/ Div (%)']].to_csv(index=False)
-    ctx_m = f"Selic: {f_pct(selic_hoje)}|IPCA: {f_pct(ipca_12m_hoje)}. Focus {ano_atual}: Sel {f_pct(proj_focus.get(f'Selic_{ano_atual}'))}/IPCA {f_pct(proj_focus.get(f'IPCA_{ano_atual}'))}"
-    sys_prompt = f"Você é Analista Sênior CNPI. [Dados]: {ctx_c}. [Macro]: {ctx_m}. Seja executiva, cruze dados."
-    
-    if api_key:
-        try:
-            import google.generativeai as genai
-            genai.configure(api_key=api_key)
-            resp_ok = False
-            for m in ['gemini-3.5-flash', 'gemini-3.1-flash-lite', 'gemini-2.5-flash', 'gemini-1.5-flash']:
-                try:
-                    resposta = genai.GenerativeModel(m).generate_content([sys_prompt, prompt]).text
-                    resp_ok = True
-                    break 
-                except: continue
-            if not resp_ok: resposta = "⚠️ Falha de rede com a IA do Google."
-        except Exception as e: resposta = f"⚠️ Erro estrutural: {e}"
-    else: resposta = "⚠️ Chave API ausente."
-    
+    # REFACTOR: Feedback visual ativo para impedir sensação de travamento na IA
+    with st.spinner("O Comitê de IA está cruzando a posição dos ativos com a conjuntura macroeconômica..."):
+        ctx_c = "Vazia." if st.session_state.df_base.empty else df_perf_final[['Ativo', 'Qtd', 'Preço Médio', 'Preço Atual', 'Evolução c/ Div (%)']].to_csv(index=False)
+        ctx_m = f"Selic: {f_pct(selic_hoje)}|IPCA: {f_pct(ipca_12m_hoje)}. Focus {ano_atual}: Sel {f_pct(proj_focus.get(f'Selic_{ano_atual}'))}/IPCA {f_pct(proj_focus.get(f'IPCA_{ano_atual}'))}"
+        sys_prompt = f"Você é Analista Sênior CNPI. [Dados]: {ctx_c}. [Macro]: {ctx_m}. Seja executiva, cruze dados."
+        
+        if api_key:
+            try:
+                import google.generativeai as genai
+                genai.configure(api_key=api_key)
+                resp_ok = False
+                for m in ['gemini-3.5-flash', 'gemini-3.1-flash-lite', 'gemini-2.5-flash', 'gemini-1.5-flash']:
+                    try:
+                        resposta = genai.GenerativeModel(m).generate_content([sys_prompt, prompt]).text
+                        resp_ok = True
+                        break 
+                    except: continue
+                if not resp_ok: resposta = "⚠️ Falha de rede com a IA do Google."
+            except Exception as e: resposta = f"⚠️ Erro estrutural: {e}"
+        else: resposta = "⚠️ Chave API ausente."
+        
     st.session_state.historico_chat.append({"role": "assistant", "content": resposta})
     salvar_chat()
     st.rerun()
