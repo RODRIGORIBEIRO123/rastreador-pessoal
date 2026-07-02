@@ -244,6 +244,9 @@ def consolidar_carteira(df):
         linhas.append({"Ativo": ativo, "Quantidade": qtd, "Preço Médio": float(pm), "Data Média": pd.to_datetime(soma_tempo/qtd, unit='s').date() if qtd>0 else pd.Timestamp.now().date()})
     return pd.DataFrame(linhas)
 
+# ==========================================
+# SCANNER ADAPTATIVO AVANÇADO B3
+# ==========================================
 def corrigir_cabecalho_b3(df):
     if df.empty: return df
     if 'Data do Negócio' in df.columns or 'Data Média' in df.columns: 
@@ -360,7 +363,7 @@ def to_excel(df, sheet_name='Sheet1'):
 # ==========================================
 # 5. SIDEBAR: UPLOAD, LOGIN E DB
 # ==========================================
-st.sidebar.markdown(f"👤 **{st.session_state.username.upper()}**")
+st.sidebar.markdown(f"### 👤 ANALISTA OPERACIONAL")
 if st.sidebar.button("🚪 Sair", use_container_width=True):
     st.session_state.logged_in = False
     st.session_state.username = ""
@@ -537,54 +540,117 @@ if not st.session_state.df_base.empty:
             st.dataframe(df_perf_final.drop(columns=['Tipo', 'Setor']).style.format({c: f_brl for c in ["Preço Médio", "Preço Atual", "Total Investido", "Saldo Atual", "Resultado (R$)", "Total Div. (R$)"]}|{c: f_pct for c in ["DY on Cost (%)", "Evolução c/ Div (%)", "IPCA Acum. (%)", "CDI Acum. (%)"]}), use_container_width=True, hide_index=True)
 
         with t2:
-            st.markdown("#### Bazin (Renda) & Graham (Valor)")
-            yd = st.number_input("Taxa Risco (%):", value=6.0, step=0.5) / 100.0
+            st.markdown("#### Métodos Certificados de Valuation")
+            st.markdown("""
+            * **Preço Teto Decio Bazin:** Focado em Renda. Divide o dividendo anual projetado pela taxa mínima de retorno exigida.
+            * **Preço Justo Benjamin Graham:** Focado em Valor Intrínseco. Dado pela fórmula $\sqrt{22.5 \times LPA \times VPA}$. *Aplicável apenas a Ações.*
+            """)
+            yd = st.number_input("Taxa de Retorno Mínima Exigida Bazin (%):", value=6.0, step=0.5, help="Dividend Yield anual mínimo desejado.") / 100.0
+            
             df_edit_v = st.data_editor(st.session_state.df_simul[["Ativo", "Cotação Atual", "Div. Projetado (R$)", "VPA (Contábil)", "LPA Projetado"]], use_container_width=True, hide_index=True, disabled=["Ativo", "Cotação Atual"])
             st.session_state.df_simul[["Div. Projetado (R$)", "VPA (Contábil)", "LPA Projetado"]] = df_edit_v[["Div. Projetado (R$)", "VPA (Contábil)", "LPA Projetado"]]
             
             recs_val = []
             for _, r in df_edit_v.iterrows():
-                bz = (r["Div. Projetado (R$)"] / yd) if r["Div. Projetado (R$)"]>0 else 0
-                gh = (22.5 * r["LPA Projetado"] * r["VPA (Contábil)"])**0.5 if r["LPA Projetado"]>0 and r["VPA (Contábil)"]>0 else 0
-                mbz = ((bz/r["Cotação Atual"])-1)*100 if bz>0 else 0
-                mgh = ((gh/r["Cotação Atual"])-1)*100 if gh>0 else 0
-                recs_val.append({"Ativo": r['Ativo'], "Teto Bazin": bz, "Margem Bazin (%)": mbz, "Justo Graham": gh, "Margem Graham (%)": mgh})
+                t_ticker = str(r['Ativo']).strip().upper()
+                is_fii = t_ticker.endswith('11') and t_ticker not in UNITS_ACOES
+                
+                bz = (float(r["Div. Projetado (R$)"]) / yd) if float(r["Div. Projetado (R$)"]) > 0 else 0.0
+                mbz = ((bz / float(r["Cotação Atual"])) - 1) * 100 if bz > 0 else 0.0
+                
+                if not is_fii:
+                    gh = (22.5 * float(r["LPA Projetado"]) * float(r["VPA (Contábil)"]))**0.5 if float(r["LPA Projetado"]) > 0 and float(r["VPA (Contábil)"]) > 0 else 0.0
+                    mgh = ((gh / float(r["Cotação Atual"])) - 1) * 100 if gh > 0 else 0.0
+                else:
+                    gh = np.nan
+                    mgh = np.nan
+                    
+                recs_val.append({"Ativo": t_ticker, "Teto Bazin": bz, "Margem Bazin (%)": mbz, "Justo Graham": gh, "Margem Graham (%)": mgh})
+                
             st.session_state.df_recs_val = pd.DataFrame(recs_val)
-            st.dataframe(st.session_state.df_recs_val.style.format({"Teto Bazin": f_brl, "Justo Graham": f_brl, "Margem Bazin (%)": f_pct, "Margem Graham (%)": f_pct}), use_container_width=True, hide_index=True)
+            st.dataframe(st.session_state.df_recs_val.style.format({
+                "Teto Bazin": lambda x: f_brl(x) if x > 0 else "-",
+                "Justo Graham": lambda x: f_brl(x) if pd.notna(x) and x > 0 else "-",
+                "Margem Bazin (%)": lambda x: f_pct(x) if x != 0 else "-",
+                "Margem Graham (%)": lambda x: f_pct(x) if pd.notna(x) and x != 0 else "-"
+            }), use_container_width=True, hide_index=True)
 
         with t3: 
+            st.markdown("##### Parametrização do Radar Operacional")
             c_p1, c_p2, c_p3, c_p4 = st.columns(4)
-            patr_fora = c_p1.number_input("Patrimônio Fora (R$):", value=0.0, step=1000.0)
-            aporte = c_p2.number_input("Aporte Mensal (R$):", value=2000.0, step=500.0)
-            rent = c_p3.number_input("Rentab. Mensal (%):", value=0.8, step=0.1) / 100.0
-            cresc_div = c_p4.number_input("Cresc. Anual Div (%):", value=5.0, step=1.0) / 100.0
+            patr_fora = c_p1.number_input("Patrimônio Externo (R$):", value=0.0, step=1000.0, help="Capital fora de custódia pronto para aporte.")
+            aporte = c_p2.number_input("Aporte Mensal Previsto (R$):", value=2000.0, step=500.0, help="Valor líquido direcionado a novos investimentos mensais.")
+            rent = c_p3.number_input("Rentabilidade Mensal Alvo (%):", value=0.8, step=0.1) / 100.0
+            cresc_div = c_p4.number_input("Crescimento Anual de Dividendos (%):", value=5.0, step=1.0) / 100.0
 
-            st.markdown("##### Radar de Oportunidades")
-            df_radar = pd.merge(df_perf_final[['Ativo', 'Tipo']], st.session_state.df_recs_val, on='Ativo')
-            mg_ex = st.number_input("Margem Graham Exigida (%):", value=15.0)
-            mb_ex = st.number_input("Margem Bazin Exigida (%):", value=5.0)
+            st.markdown("##### 🎯 Triagem Estratégica Corporativa")
+            c_m1, c_m2 = st.columns(2)
+            mb_ex = c_m1.number_input("Margem Mínima Bazin Exigida (%):", value=5.0, help="Sinaliza COMPRA se o desconto em relação ao Preço Teto for superior a este patamar.")
+            mg_ex = c_m2.number_input("Margem Mínima Graham Exigida (%):", value=15.0, help="Sinaliza COMPRA se o desconto em relação ao Preço Justo de Graham for superior a este patamar. Ignorado para FIIs.")
             
-            sts_list = []
-            for _, r in df_radar.iterrows():
-                if r['Tipo'] == 'Ação': sts_list.append("COMPRA 🟢" if r['Margem Graham (%)']>mg_ex and r['Margem Bazin (%)']>mb_ex else ("MANTER 🟡" if r['Margem Graham (%)']>0 else "VENDA 🔴"))
-                else: sts_list.append("COMPRA 🟢" if r['Margem Bazin (%)']>mb_ex else ("MANTER 🟡" if r['Margem Bazin (%)']>-5 else "VENDA 🔴"))
-            df_radar['Status'] = sts_list
-            st.dataframe(df_radar.style.format({"Teto Bazin": f_brl, "Justo Graham": f_brl, "Margem Bazin (%)": f_pct, "Margem Graham (%)": f_pct}), use_container_width=True, hide_index=True)
+            df_radar = pd.merge(df_perf_final[['Ativo', 'Tipo', 'Preço Atual']], st.session_state.df_recs_val, on='Ativo')
+            
+            status_bazin = []
+            status_graham = []
+            
+            for _, row in df_radar.iterrows():
+                if row['Teto Bazin'] > 0:
+                    status_bazin.append("COMPRA 🟢" if row['Margem Bazin (%)'] >= mb_ex else ("MANTER 🟡" if row['Margem Bazin (%)'] >= -5 else "VENDA 🔴"))
+                else:
+                    status_bazin.append("MANTER 🟡")
+                    
+                if row['Tipo'] == 'Ação' and pd.notna(row['Justo Graham']) and row['Justo Graham'] > 0:
+                    status_graham.append("COMPRA 🟢" if row['Margem Graham (%)'] >= mg_ex else ("MANTER 🟡" if row['Margem Graham (%)'] >= 0 else "VENDA 🔴"))
+                else:
+                    status_graham.append("-")
+                    
+            df_radar['Status Bazin'] = status_bazin
+            df_radar['Status Graham'] = status_graham
+            
+            df_radar_exib = df_radar[['Ativo', 'Tipo', 'Preço Atual', 'Teto Bazin', 'Margem Bazin (%)', 'Status Bazin', 'Justo Graham', 'Margem Graham (%)', 'Status Graham']]
+            st.dataframe(df_radar_exib.style.format({
+                "Preço Atual": f_brl,
+                "Teto Bazin": lambda x: f_brl(x) if x > 0 else "-",
+                "Justo Graham": lambda x: f_brl(x) if pd.notna(x) and x > 0 else "-",
+                "Margem Bazin (%)": lambda x: f_pct(x) if x != 0 else "-",
+                "Margem Graham (%)": lambda x: f_pct(x) if pd.notna(x) and x != 0 else "-"
+            }), use_container_width=True, hide_index=True)
 
             st.markdown("##### ❄️ Projeção Bola de Neve (1 Ano)")
-            saldo_corr = df_perf_final['Saldo Atual'].sum() + patr_fora
-            base_div = st.session_state.df_simul['Div. Projetado (R$)'].sum() / 12
+            saldo_inicial = df_perf_final['Saldo Atual'].sum() + patr_fora
+            base_div = st.session_state.df_simul['Div. Projetado (R$)'].sum() / 12 if not st.session_state.df_simul.empty else 0.0
+            
             ac_ap, ac_jd, linhas_proj = 0.0, 0.0, []
+            saldo_dinamico = saldo_inicial
             
             for m in range(13):
-                linhas_proj.append({"Mês": f"Mês {m}", "Patrimônio Base": saldo_corr, "Aportes Acum.": ac_ap, "Juros/Divs Acum.": ac_jd})
-                gc = saldo_corr * rent
-                div_m = base_div * ((1 + cresc_div) ** (m/12))
-                ac_jd += (gc + div_m)
-                ac_ap += aporte
-                saldo_corr += (gc + div_m + aporte)
+                if m == 0:
+                    linhas_proj.append({"Mês": f"Mês {m}", "Capital Inicial": saldo_inicial, "Aportes Acumulados": 0.0, "Rendimentos/Divs Acumulados": 0.0})
+                else:
+                    gc = saldo_dinamico * rent
+                    div_m = base_div * ((1 + cresc_div) ** (m/12))
+                    ac_jd += (gc + div_m)
+                    ac_ap += aporte
+                    saldo_dinamico += (gc + div_m + aporte)
+                    
+                    linhas_proj.append({
+                        "Mês": f"Mês {m}", 
+                        "Capital Inicial": saldo_inicial, 
+                        "Aportes Acumulados": ac_ap, 
+                        "Rendimentos/Divs Acumulados": ac_jd
+                    })
             
-            fig_proj = px.area(pd.DataFrame(linhas_proj).melt(id_vars=["Mês"], var_name="Componente", value_name="Valor"), x="Mês", y="Valor", color="Componente")
+            df_proj_plot = pd.DataFrame(linhas_proj)
+            df_melt_proj = df_proj_plot.melt(id_vars=["Mês"], value_vars=["Capital Inicial", "Aportes Acumulados", "Rendimentos/Divs Acumulados"], var_name="Componente", value_name="Valor (R$)")
+            
+            fig_proj = px.bar(
+                df_melt_proj, 
+                x="Mês", 
+                y="Valor (R$)", 
+                color="Componente", 
+                title="Evolução Patrimonial Controlada (Alocação Separada)",
+                labels={"Valor (R$)": "Patrimônio Total (R$)"}
+            )
             st.plotly_chart(fig_proj, use_container_width=True)
 
         with t4:
@@ -605,7 +671,7 @@ if not st.session_state.df_base.empty:
             janela_temporal = st.radio("Período de Leitura do Gráfico:", ["Desde a Data de Compra (Automático)", "Definir Período Customizado (Manual)"], horizontal=True)
             
             if janela_temporal == "Desde a Data de Compra (Automático)":
-                st.info("Neste modo, o CDI e o IPCA são calculados individualmente para cada ativo, considerando exatamente o tempo que ele está na carteira.")
+                st.info("Neste modo, o CDI e o IPCA são calculados individualmente para cada ativo, considerando exatamente o tempo de posse na carteira.")
                 if ativos_sel:
                     df_comp = df_perf_final[df_perf_final['Ativo'].isin(ativos_sel)][['Ativo', 'Evolução c/ Div (%)', 'CDI Acum. (%)', 'IPCA Acum. (%)']].copy()
                     df_comp = df_comp.rename(columns={'Evolução c/ Div (%)': 'Carteira (c/ Div)', 'CDI Acum. (%)': 'CDI', 'IPCA Acum. (%)': 'IPCA'})
