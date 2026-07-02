@@ -245,7 +245,7 @@ def consolidar_carteira(df):
     return pd.DataFrame(linhas)
 
 # ==========================================
-# SCANNER ADAPTATIVO AVANÇADO B3 (CORRIGIDO)
+# SCANNER ADAPTATIVO AVANÇADO B3
 # ==========================================
 def corrigir_cabecalho_b3(df):
     if df.empty: return df
@@ -271,7 +271,6 @@ def corrigir_cabecalho_b3(df):
             return mapeamento, is_movimentacao
         return None, False
 
-    # CASO 1: O arquivo já veio perfeitamente limpo desde o topo (Caso da planilha do Ítalo)
     mapeamento, is_mov = tentar_mapear(df.columns.tolist())
     if mapeamento and ('Data do Negócio' in mapeamento.values() or 'Código de Negociação' in mapeamento.values()):
         df = df.rename(columns=mapeamento)
@@ -279,7 +278,6 @@ def corrigir_cabecalho_b3(df):
             df['Valor'] = df['Quantidade'].apply(limpar_numero) * df['Preço Unitário'].apply(limpar_numero)
         return df
 
-    # CASO 2: O arquivo possui linhas poluídas acima das colunas reais (Padrão de exportações pesadas da B3)
     for i in range(min(30, len(df))):
         linha = df.iloc[i].tolist()
         mapeamento, is_mov = tentar_mapear(linha)
@@ -315,11 +313,9 @@ def processar_planilha_b3(df):
             
         ticker = MAPEAMENTO_TICKERS.get(ticker_raw[:-1] if ticker_raw.endswith('F') and len(ticker_raw) > 4 else ticker_raw, ticker_raw[:-1] if ticker_raw.endswith('F') and len(ticker_raw) > 4 else ticker_raw)
         
-        # Filtro de Segurança: Garante formato de ticker de renda variável (Ações/FIIs/BDRs) e ignora Renda Fixa (CDB)
         if not re.match(r'^[A-Z]{4}\d{1,2}$', ticker):
             continue
             
-        # Filtro de Segurança: Ignora proventos em dinheiro para não inflar ou desbalancear as cotas
         if 'Tipo de Movimentação' in df.columns:
             mov_tipo_str = str(row['Tipo de Movimentação']).strip().upper()
             if any(p in mov_tipo_str for p in ['RENDIMENTO', 'JUROS', 'DIVIDENDO', 'JCP', 'REEMBOLSO']):
@@ -331,13 +327,11 @@ def processar_planilha_b3(df):
         is_compra = False
         is_venda = False
         
-        # Identificação precisa baseada na direção financeira do Extrato de Movimentações
         if 'Entrada/Saída' in df.columns and pd.notna(row['Entrada/Saída']):
             io_dir = str(row['Entrada/Saída']).strip().upper()
             if 'CRED' in io_dir or 'ENT' in io_dir: is_compra = True
             elif 'DEB' in io_dir or 'SAI' in io_dir: is_venda = True
         
-        # Fallback para o Extrato de Negociações
         if not is_compra and not is_venda and 'Tipo de Movimentação' in df.columns:
             tipo_mov = str(row['Tipo de Movimentação']).strip().upper()
             if any(term in tipo_mov for term in ['COMPRA', 'CREDITO', 'CRÉDITO', 'LIQUIDAÇÃO', 'LIQUIDACAO', 'TRANSFERENCIA', 'TRANSFERÊNCIA']) or tipo_mov == 'C':
@@ -605,59 +599,75 @@ if not st.session_state.df_base.empty:
             st.markdown("---")
             st.markdown("#### 📈 Gráfico Dinâmico Comparativo Histórico (Linhas)")
             
+            # RECONSTRUÇÃO DO LAYOUT ORIGINAL DE MÚLTIPLA SELEÇÃO SOLICITADO
             ativos_disponiveis = sorted(df_perf_final['Ativo'].unique().tolist())
-            ativo_selecionado = st.selectbox("Escolha o Ativo para Análise Histórica:", ativos_disponiveis)
             
-            indexadores_selecionados = st.multiselect("Escolha os Indexadores para Comparação:", ['CDI', 'IPCA'], default=['CDI', 'IPCA'])
+            c_f_g1, c_f_g2 = st.columns(2)
+            ativos_sel = c_f_g1.multiselect("Selecione os Ativos para o gráfico:", options=ativos_disponiveis, default=ativos_disponiveis[:2] if ativos_disponiveis else [])
+            indexadores_sel = c_f_g2.multiselect("Selecione os Indexadores para Comparação:", ['CDI', 'IPCA'], default=['CDI', 'IPCA'])
             
-            janela_temporal = st.radio("Período de Leitura do Gráfico:", ["Desde a Data de Compra deste Ativo (Automático)", "Definir Período Customizado (Manual)"], horizontal=True)
+            janela_temporal = st.radio("Período de Leitura do Gráfico:", ["Desde a Data de Compra (Automático)", "Definir Período Customizado (Manual)"], horizontal=True)
             
-            data_compra_real = st.session_state.dados_mercado[ativo_selecionado]['Data'].date()
-            
-            if janela_temporal == "Desde a Data de Compra deste Ativo (Automático)":
-                dt_inicial = data_compra_real
+            if janela_temporal == "Desde a Data de Compra (Automático)":
+                dates = [st.session_state.dados_mercado[a]['Data'].date() for a in ativos_sel if a in st.session_state.dados_mercado]
+                dt_inicial = min(dates) if dates else pd.Timestamp.now().date() - pd.Timedelta(days=365)
                 dt_final = pd.Timestamp.now().date()
-                st.info(f"Análise configurada automaticamente desde a data de aquisição do ativo: {dt_inicial.strftime('%d/%m/%Y')}")
+                st.info(f"Análise configurada automaticamente a partir do ativo mais antigo selecionado: {dt_inicial.strftime('%d/%m/%Y')}")
             else:
                 c_dt1, c_dt2 = st.columns(2)
-                dt_inicial = c_dt1.date_input("De:", data_compra_real)
+                dt_inicial = c_dt1.date_input("De:", pd.Timestamp.now().date() - pd.Timedelta(days=365))
                 dt_final = c_dt2.date_input("Até:", pd.Timestamp.now().date())
                 
             if st.button("Gerar Curva de Evolução Histórica", use_container_width=True):
-                with st.spinner("Buscando cotações históricas e calculando indexadores..."):
-                    historico_precos = yf.Ticker(f"{ativo_selecionado}.SA").history(start=dt_inicial, end=dt_final)
-                    
-                    if not historico_precos.empty:
-                        df_linhas_evol = pd.DataFrame(index=historico_precos.index)
+                if ativos_sel:
+                    with st.spinner("Buscando cotações históricas e calculando indexadores..."):
+                        df_linhas_evol = pd.DataFrame()
                         
-                        preco_referencia = historico_precos['Close'].iloc[0]
-                        df_linhas_evol[ativo_selecionado] = (historico_precos['Close'] / preco_referencia) * 100
-                        
+                        # Processamento dos indexadores econômicos
                         df_macro = carregar_macro()
+                        filtro_macro_g = pd.DataFrame()
                         if not df_macro.empty:
-                            filtro_macro_g = df_macro.loc[dt_inicial:dt_final]
-                            
-                            if 'CDI' in indexadores_selecionados:
+                            try: filtro_macro_g = df_macro.loc[dt_inicial:dt_final]
+                            except: pass
+                        
+                        # Processamento e montagem das curvas base 100 dos ativos selecionados
+                        for ativo in ativos_sel:
+                            historico_precos = yf.Ticker(f"{ativo}.SA").history(start=dt_inicial, end=dt_final)
+                            if not historico_precos.empty:
+                                # SOLUÇÃO COMPLETA DO TYPEERROR: Força o índice a remover a informação de timezone
+                                historico_precos.index = historico_precos.index.tz_localize(None)
+                                
+                                preco_referencia = historico_precos['Close'].iloc[0]
+                                df_linhas_evol[ativo] = (historico_precos['Close'] / preco_referencia) * 100
+                        
+                        if not df_linhas_evol.empty:
+                            # Inserção alinhada do CDI acumulado na linha temporal unificada
+                            if 'CDI' in indexadores_sel and not filtro_macro_g.empty:
                                 cdi_fator = (1 + filtro_macro_g['CDI']).cumprod() * 100
                                 df_linhas_evol['CDI'] = cdi_fator.reindex(df_linhas_evol.index, method='ffill').fillna(100)
                                 
-                            if 'IPCA' in indexadores_selecionados:
+                            # Inserção alinhada do IPCA acumulado na linha temporal unificada
+                            if 'IPCA' in indexadores_sel and not filtro_macro_g.empty:
                                 ipca_fator = (1 + filtro_macro_g['IPCA']).cumprod() * 100
                                 df_linhas_evol['IPCA'] = ipca_fator.reindex(df_linhas_evol.index, method='ffill').fillna(100)
                                 
-                        df_linhas_evol = df_linhas_evol.reset_index()
-                        df_linhas_evol['Date'] = df_linhas_evol['Date'].dt.date
-                        
-                        colunas_plot = [ativo_selecionado] + indexadores_selecionados
-                        df_melted_plot = df_linhas_evol.melt(id_vars='Date', value_vars=colunas_plot, var_name='Ativo/Benchmark', value_name='Evolução (Base 100)')
-                        
-                        fig_linhas_final = px.line(
-                            df_melted_plot, x='Date', y='Evolução (Base 100)', color='Ativo/Benchmark',
-                            title=f"Desempenho Real de {ativo_selecionado} vs Indexadores Selecionados"
-                        )
-                        st.plotly_chart(fig_linhas_final, use_container_width=True)
-                    else:
-                        st.error("Sem dados de cotação disponíveis para este intervalo no Yahoo Finance.")
+                            df_linhas_evol = df_linhas_evol.reset_index()
+                            df_linhas_evol.rename(columns={'index': 'Date', 'Date': 'Date'}, inplace=True)
+                            if 'Date' in df_linhas_evol.columns:
+                                df_linhas_evol['Date'] = pd.to_datetime(df_linhas_evol['Date']).dt.date
+                            
+                            colunas_plot = [c for c in df_linhas_evol.columns if c != 'Date']
+                            df_melted_plot = df_linhas_evol.melt(id_vars='Date', value_vars=colunas_plot, var_name='Ativo/Benchmark', value_name='Evolução (Base 100)')
+                            
+                            fig_linhas_final = px.line(
+                                df_melted_plot, x='Date', y='Evolução (Base 100)', color='Ativo/Benchmark',
+                                title="Evolução Histórica Comparativa Real Time (Base 100)"
+                            )
+                            st.plotly_chart(fig_linhas_final, use_container_width=True)
+                        else:
+                            st.error("Nenhum dado histórico de cotação foi localizado no intervalo.")
+                else:
+                    st.warning("Selecione pelo menos um ativo para gerar o gráfico.")
 
         with t5:
             st.markdown("### 💸 Proventos (Mensais e Exportação)")
