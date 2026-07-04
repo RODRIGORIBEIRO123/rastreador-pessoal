@@ -178,19 +178,23 @@ def salvar_dados_completos_db(username):
 def carregar_dados_completos_db(username):
     conn = get_db_connection()
     
-    # Carregar Carteira
-    query_cart = f"SELECT Ativo, Quantidade, Preco_Medio as \"Preço Médio\", Data_Media as \"Data Média\" FROM carteiras WHERE username={PARAM}"
+    # 1. Carregar Carteira
+    query_cart = f"SELECT Ativo, Quantidade, Preco_Medio, Data_Media FROM carteiras WHERE username={PARAM}"
     df_cart = pd.read_sql_query(query_cart, conn, params=(username,))
+    # Renomeando via Pandas para evitar o erro do PostgreSQL
+    df_cart = df_cart.rename(columns={"Preco_Medio": "Preço Médio", "preco_medio": "Preço Médio", "Data_Media": "Data Média", "data_media": "Data Média", "ativo": "Ativo", "quantidade": "Quantidade"})
     if not df_cart.empty: 
         df_cart['Data Média'] = pd.to_datetime(df_cart['Data Média']).dt.date
     st.session_state.df_base = df_cart
     
-    # Carregar Tesouro
-    query_tes = f"SELECT titulo as \"Título\", investido as \"Valor Investido (R$)\", taxa as \"Taxa Anual (%)\", vencimento as \"Ano Vencimento\" FROM tesouro WHERE username={PARAM}"
+    # 2. Carregar Tesouro Direto (Blindado contra o erro do '%')
+    query_tes = f"SELECT titulo, investido, taxa, vencimento FROM tesouro WHERE username={PARAM}"
     df_tes = pd.read_sql_query(query_tes, conn, params=(username,))
+    # Aplicando os nomes elegantes por fora do banco
+    df_tes = df_tes.rename(columns={"titulo": "Título", "investido": "Valor Investido (R$)", "taxa": "Taxa Anual (%)", "vencimento": "Ano Vencimento"})
     st.session_state.df_tesouro = df_tes
     
-    # Carregar Chat
+    # 3. Carregar Chat IA
     query_chat = f"SELECT role, content FROM chat_ia WHERE username={PARAM}"
     df_chat = pd.read_sql_query(query_chat, conn, params=(username,))
     if not df_chat.empty:
