@@ -830,7 +830,7 @@ if st.session_state.dados_mercado:
         mb_ex = c_m1.number_input("Margem Mínima Bazin Exigida (%):", value=5.0)
         mg_ex = c_m2.number_input("Margem Mínima Graham Exigida (%):", value=15.0)
         
-        df_radar = pd.merge(df_pf[['Ativo', 'Tipo', 'Preço Atual']], st.session_state.df_recs_val, on='Ativo')
+        df_radar = pd.merge(df_perf_final[['Ativo', 'Tipo', 'Preço Atual']], st.session_state.df_recs_val, on='Ativo')
         
         status_bazin = []
         status_graham = []
