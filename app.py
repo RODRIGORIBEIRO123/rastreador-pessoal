@@ -539,14 +539,14 @@ def processar_planilha_b3(df):
     return consolidar_carteira(pd.DataFrame(ativos_finais))
 
 # ==========================================
-# 5. SIDEBAR: UPLOAD, INTEGRAÇÃO B3 E BACKUP
+# 5. SIDEBAR: UPLOAD, INTEGRAÇÃO E BACKUP
 # ==========================================
 with st.sidebar:
     st.markdown("### 👤 ANALISTA OPERACIONAL")
+    
     if st.button("🚪 Sair do Terminal", use_container_width=True):
-        st.session_state.logged_in = False
-        st.session_state.username = ""
-        st.session_state.df_base = pd.DataFrame()
+        # O comando clear() oblitera toda a memória residual do navegador
+        st.session_state.clear()
         st.rerun()
         
     st.divider()
