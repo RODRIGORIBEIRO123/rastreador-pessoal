@@ -140,117 +140,66 @@ def init_db():
     conn = get_db_connection()
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS usuarios (username TEXT PRIMARY KEY, password TEXT)''')
-    
     if IS_POSTGRES:
         c.execute('''CREATE TABLE IF NOT EXISTS carteiras (username TEXT, ativo TEXT, quantidade DOUBLE PRECISION, preco_medio DOUBLE PRECISION, data_media TEXT)''')
-        c.execute('''CREATE TABLE IF NOT EXISTS tesouro (username TEXT, titulo TEXT, investido DOUBLE PRECISION, taxa DOUBLE PRECISION, vencimento INTEGER)''')
+        c.execute('''CREATE TABLE IF NOT EXISTS tesouro_v2 (username TEXT, titulo TEXT, data_compra TEXT, tipo_taxa TEXT, investido DOUBLE PRECISION, taxa DOUBLE PRECISION, vencimento INTEGER)''')
     else:
         c.execute('''CREATE TABLE IF NOT EXISTS carteiras (username TEXT, Ativo TEXT, Quantidade REAL, Preco_Medio REAL, Data_Media TEXT)''')
-        c.execute('''CREATE TABLE IF NOT EXISTS tesouro (username TEXT, titulo TEXT, investido REAL, taxa REAL, vencimento INTEGER)''')
-        
+        c.execute('''CREATE TABLE IF NOT EXISTS tesouro_v2 (username TEXT, titulo TEXT, data_compra TEXT, tipo_taxa TEXT, investido REAL, taxa REAL, vencimento INTEGER)''')
     c.execute('''CREATE TABLE IF NOT EXISTS chat_ia (username TEXT, role TEXT, content TEXT)''')
     conn.commit()
     conn.close()
 
-def hash_password(password): 
-    return hashlib.sha256(password.encode()).hexdigest()
-
-def registrar_usuario(username, password):
-    conn = get_db_connection()
-    c = conn.cursor()
-    try:
-        c.execute(f"INSERT INTO usuarios (username, password) VALUES ({PARAM}, {PARAM})", (username.strip(), hash_password(password)))
-        conn.commit()
-        conn.close()
-        return True
-    except:
-        conn.close()
-        return False
-
-def autenticar_usuario(username, password):
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute(f"SELECT * FROM usuarios WHERE username={PARAM} AND password={PARAM}", (username.strip(), hash_password(password)))
-    user = c.fetchone()
-    conn.close()
-    return user is not None
-
-def atualizar_senha(username, nova_senha):
-    usr = username.strip()
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute(f"SELECT * FROM usuarios WHERE username={PARAM}", (usr,))
-    user = c.fetchone()
-    if user is None:
-        conn.close()
-        return False
-        
-    c.execute(f"UPDATE usuarios SET password={PARAM} WHERE username={PARAM}", (hash_password(nova_senha), usr))
-    conn.commit()
-    conn.close()
-    return True
-
 def salvar_dados_completos_db(username):
-    conn = get_db_connection()
-    c = conn.cursor()
+    conn = get_db_connection(); c = conn.cursor()
     usr = username.strip()
     
-    # 1. Salvar Carteira B3
+    # Salvar Carteira B3
     c.execute(f"DELETE FROM carteiras WHERE username={PARAM}", (usr,))
     if not st.session_state.df_base.empty:
-        for _, row in st.session_state.df_base.iterrows():
+        for _, r in st.session_state.df_base.iterrows():
             c.execute(f"INSERT INTO carteiras (username, ativo, quantidade, preco_medio, data_media) VALUES ({PARAM}, {PARAM}, {PARAM}, {PARAM}, {PARAM})",
-                      (usr, row['Ativo'], float(row['Quantidade']), float(row['Preço Médio']), str(row['Data Média'])))
+                      (usr, r['Ativo'], float(r['Quantidade']), float(r['Preço Médio']), str(r['Data Média'])))
             
-    # 2. Salvar Tesouro Direto
-    c.execute(f"DELETE FROM tesouro WHERE username={PARAM}", (usr,))
+    # Salvar Tesouro Direto V2
+    c.execute(f"DELETE FROM tesouro_v2 WHERE username={PARAM}", (usr,))
     if not st.session_state.df_tesouro.empty:
-        for _, row in st.session_state.df_tesouro.iterrows():
-            c.execute(f"INSERT INTO tesouro (username, titulo, investido, taxa, vencimento) VALUES ({PARAM}, {PARAM}, {PARAM}, {PARAM}, {PARAM})",
-                      (usr, row['Título'], float(row['Valor Investido (R$)']), float(row['Taxa Anual (%)']), int(row['Ano Vencimento'])))
+        for _, r in st.session_state.df_tesouro.iterrows():
+            c.execute(f"INSERT INTO tesouro_v2 (username, titulo, data_compra, tipo_taxa, investido, taxa, vencimento) VALUES ({PARAM}, {PARAM}, {PARAM}, {PARAM}, {PARAM}, {PARAM}, {PARAM})",
+                      (usr, r['Título'], str(r['Data Compra']), r['Tipo Taxa'], float(r['Valor Investido (R$)']), float(r['Taxa Contratada (%)']), int(r['Ano Vencimento'])))
             
-    # 3. Salvar Histórico do Comitê de IA
+    # Salvar Histórico do Comitê de IA
     c.execute(f"DELETE FROM chat_ia WHERE username={PARAM}", (usr,))
     for msg in st.session_state.historico_chat[-40:]:
         c.execute(f"INSERT INTO chat_ia (username, role, content) VALUES ({PARAM}, {PARAM}, {PARAM})", (usr, msg['role'], msg['content']))
         
-    conn.commit()
-    conn.close()
+    conn.commit(); conn.close()
 
 def carregar_dados_completos_db(username):
     conn = get_db_connection()
     usr = username.strip()
     
-    # 1. Carregar Carteira B3 (Blindado contra erro de sintaxe SQL)
+    # Carregar Carteira B3
     query_cart = f"SELECT Ativo, Quantidade, Preco_Medio, Data_Media FROM carteiras WHERE username={PARAM}"
     df_cart = pd.read_sql_query(query_cart, conn, params=(usr,))
     df_cart = df_cart.rename(columns={"Preco_Medio": "Preço Médio", "preco_medio": "Preço Médio", "Data_Media": "Data Média", "data_media": "Data Média", "ativo": "Ativo", "quantidade": "Quantidade"})
-    
-    if not df_cart.empty: 
-        df_cart['Data Média'] = pd.to_datetime(df_cart['Data Média']).dt.date
-    else:
-        df_cart = pd.DataFrame(columns=["Ativo", "Quantidade", "Preço Médio", "Data Média"])
-        
+    if not df_cart.empty: df_cart['Data Média'] = pd.to_datetime(df_cart['Data Média']).dt.date
+    else: df_cart = pd.DataFrame(columns=["Ativo", "Quantidade", "Preço Médio", "Data Média"])
     st.session_state.df_base = df_cart
     
-    # 2. Carregar Tesouro Direto
-    query_tes = f"SELECT titulo, investido, taxa, vencimento FROM tesouro WHERE username={PARAM}"
+    # Carregar Tesouro Direto V2
+    query_tes = f"SELECT titulo, data_compra, tipo_taxa, investido, taxa, vencimento FROM tesouro_v2 WHERE username={PARAM}"
     df_tes = pd.read_sql_query(query_tes, conn, params=(usr,))
-    df_tes = df_tes.rename(columns={"titulo": "Título", "investido": "Valor Investido (R$)", "taxa": "Taxa Anual (%)", "vencimento": "Ano Vencimento"})
-    
-    if df_tes.empty:
-        df_tes = pd.DataFrame(columns=["Título", "Valor Investido (R$)", "Taxa Anual (%)", "Ano Vencimento"])
-        
+    df_tes = df_tes.rename(columns={"titulo": "Título", "data_compra": "Data Compra", "tipo_taxa": "Tipo Taxa", "investido": "Valor Investido (R$)", "taxa": "Taxa Contratada (%)", "vencimento": "Ano Vencimento"})
+    if not df_tes.empty: df_tes['Data Compra'] = pd.to_datetime(df_tes['Data Compra']).dt.date
+    else: df_tes = pd.DataFrame(columns=["Título", "Data Compra", "Tipo Taxa", "Valor Investido (R$)", "Taxa Contratada (%)", "Ano Vencimento"])
     st.session_state.df_tesouro = df_tes
     
-    # 3. Carregar Histórico de IA
+    # Carregar Chat IA
     query_chat = f"SELECT role, content FROM chat_ia WHERE username={PARAM}"
     df_chat = pd.read_sql_query(query_chat, conn, params=(usr,))
-    
-    if not df_chat.empty: 
-        st.session_state.historico_chat = df_chat.to_dict('records')
-    else: 
-        st.session_state.historico_chat = [{"role": "assistant", "content": f"Saudações, {username}. O terminal está mapeado e online. Como posso ajudar a otimizar sua gestão hoje?"}]
+    if not df_chat.empty: st.session_state.historico_chat = df_chat.to_dict('records')
+    else: st.session_state.historico_chat = [{"role": "assistant", "content": f"Saudações, {username}. O terminal está mapeado e online. Como posso ajudar?"}]
         
     conn.close()
 
@@ -1189,29 +1138,111 @@ else:
 # ==========================================
 # 8. ABAS ISOLADAS (SEMPRE ATIVAS)
 # ==========================================
-with tab_tesouro:
-    st.markdown("### 🏛️ Simulador de Tesouro Direto")
-    st.info("Insira títulos de renda fixa manualmente. O sistema projeta de forma automática os juros compostos exatos até o momento do resgate no vencimento.")
+with t_tes:
+    st.markdown("### 🏛️ Simulador e Controle de Tesouro Direto")
+    st.info("Faça o upload da sua planilha de controle do Tesouro ou insira os títulos manualmente. O sistema calculará o valor futuro baseado na inflação real vigente.")
     
+    # Upload específico para a planilha do Tesouro
+    arq_tesouro = st.file_uploader("Upload da Planilha do Tesouro Direto (Excel/CSV)", type=["xlsx", "csv"], key="up_tesouro")
+    
+    if arq_tesouro:
+        try:
+            if arq_tesouro.name.endswith('.csv'):
+                txt_tes = arq_tesouro.getvalue().decode('utf-8-sig', errors='ignore')
+                sep_tes = '\t' if txt_tes.count('\t') > txt_tes.count(';') else ';'
+                df_up_tes = pd.read_csv(io.StringIO(txt_tes), sep=sep_tes)
+            else:
+                df_up_tes = pd.read_excel(arq_tesouro)
+            
+            # Motor de mapeamento inteligente para ler as colunas da sua planilha
+            mapeamento_tes = {}
+            for col in df_up_tes.columns:
+                c_up = str(col).strip().upper()
+                if 'TÍTULO' in c_up or 'TITULO' in c_up: mapeamento_tes[col] = 'Título'
+                elif 'DATA' in c_up or 'COMPRA' in c_up: mapeamento_tes[col] = 'Data Compra'
+                elif 'VALOR' in c_up or 'INVEST' in c_up: mapeamento_tes[col] = 'Valor Investido (R$)'
+                elif 'TIPO' in c_up or 'PRÉ' in c_up or 'PÓS' in c_up: mapeamento_tes[col] = 'Tipo Taxa'
+                elif 'TAXA' in c_up: mapeamento_tes[col] = 'Taxa Contratada (%)'
+                elif 'VENC' in c_up or 'ANO' in c_up: mapeamento_tes[col] = 'Ano Vencimento'
+            
+            df_up_tes = df_up_tes.rename(columns=mapeamento_tes)
+            colunas_padrao = ["Título", "Data Compra", "Tipo Taxa", "Valor Investido (R$)", "Taxa Contratada (%)", "Ano Vencimento"]
+            
+            # Preenche colunas faltantes para não quebrar a tabela
+            for c in colunas_padrao:
+                if c not in df_up_tes.columns: df_up_tes[c] = None
+                    
+            # Formatação de limpeza
+            df_up_tes['Data Compra'] = pd.to_datetime(df_up_tes['Data Compra'], errors='coerce').dt.date
+            df_up_tes['Valor Investido (R$)'] = pd.to_numeric(df_up_tes['Valor Investido (R$)'], errors='coerce').fillna(0)
+            df_up_tes['Taxa Contratada (%)'] = pd.to_numeric(df_up_tes['Taxa Contratada (%)'], errors='coerce').fillna(0)
+            
+            # Substitui "IPCA" / "PRE" da sua planilha para o padrão do selectbox
+            df_up_tes['Tipo Taxa'] = df_up_tes['Tipo Taxa'].astype(str).apply(lambda x: "Pós-fixado (IPCA+)" if "IPCA" in x.upper() or "PÓS" in x.upper() else "Pré-fixado")
+            
+            st.session_state.df_tesouro = df_up_tes[colunas_padrao]
+            st.success("Planilha do Tesouro processada com sucesso!")
+        except Exception as e:
+            st.error(f"Erro ao ler a planilha: {e}")
+
+    # Inicializa linha em branco se estiver vazio
     if st.session_state.df_tesouro.empty: 
-        st.session_state.df_tesouro = pd.DataFrame([{"Título": "Tesouro IPCA+ 2029", "Valor Investido (R$)": 1000.0, "Taxa Anual (%)": 6.0, "Ano Vencimento": 2029}])
+        st.session_state.df_tesouro = pd.DataFrame([{
+            "Título": "Tesouro IPCA+ 2029", "Data Compra": pd.Timestamp.now().date(), "Tipo Taxa": "Pós-fixado (IPCA+)",
+            "Valor Investido (R$)": 1000.0, "Taxa Contratada (%)": 6.0, "Ano Vencimento": 2029
+        }])
         
-    df_t = st.data_editor(st.session_state.df_tesouro, num_rows="dynamic", use_container_width=True, hide_index=True)
+    st.markdown("#### 📝 Carteira de Títulos (Ajuste Fino)")
+    # Data Editor customizado com SelectBox para a Taxa
+    df_t = st.data_editor(
+        st.session_state.df_tesouro, 
+        num_rows="dynamic", 
+        use_container_width=True, 
+        hide_index=True,
+        column_config={
+            "Tipo Taxa": st.column_config.SelectboxColumn("Tipo Taxa", options=["Pré-fixado", "Pós-fixado (IPCA+)"], required=True),
+            "Data Compra": st.column_config.DateColumn("Data Compra")
+        }
+    )
     st.session_state.df_tesouro = df_t
     
-    if st.button("Projetar Juros Compostos", type="primary"):
+    if st.button("Projetar Rentabilidade e Valor Futuro", type="primary"):
         res_t = []
+        # O sistema usa a inflação projetada/vigente que puxamos do Banco Central (macro)
+        ipca_projetado = ipca_12m_hoje if ipca_12m_hoje > 0 else 4.0 
+        
         for _, rt in df_t.iterrows():
-            anos = max(1, int(rt['Ano Vencimento']) - pd.Timestamp.now().year)
-            v_final = float(rt['Valor Investido (R$)']) * ((1 + (float(rt['Taxa Anual (%)'])/100)) ** anos)
-            res_t.append({
-                "Título": rt['Título'], 
-                "Anos P/ Vencer": anos, 
-                "Investido": float(rt['Valor Investido (R$)']), 
-                "Valor Bruto no Vencimento": v_final, 
-                "Lucro Bruto Projetado": v_final - float(rt['Valor Investido (R$)'])
-            })
-        st.dataframe(pd.DataFrame(res_t).style.format({"Investido": f_brl, "Valor Bruto no Vencimento": f_brl, "Lucro Bruto Projetado": f_brl}), use_container_width=True, hide_index=True)
+            try:
+                anos = max(1, int(rt['Ano Vencimento']) - pd.Timestamp.now().year)
+                investido = float(rt['Valor Investido (R$)'])
+                taxa_contrato = float(rt['Taxa Contratada (%)'])
+                
+                # Se for Pós-fixado, soma a taxa contratada com a inflação base
+                if str(rt['Tipo Taxa']).strip() == "Pós-fixado (IPCA+)":
+                    taxa_real_aplicada = taxa_contrato + ipca_projetado
+                else:
+                    taxa_real_aplicada = taxa_contrato
+                    
+                v_final = investido * ((1 + (taxa_real_aplicada/100)) ** anos)
+                
+                res_t.append({
+                    "Título": rt['Título'], 
+                    "Anos P/ Vencer": anos, 
+                    "Taxa Total Considerada (a.a)": f"{taxa_real_aplicada:.2f}%",
+                    "Valor Investido": investido, 
+                    "Valor Bruto no Vencimento": v_final, 
+                    "Lucro Bruto Projetado": v_final - investido
+                })
+            except:
+                continue
+                
+        if res_t:
+            st.markdown("#### 🚀 Painel de Projeção")
+            st.dataframe(pd.DataFrame(res_t).style.format({
+                "Valor Investido": f_brl, 
+                "Valor Bruto no Vencimento": f_brl, 
+                "Lucro Bruto Projetado": f_brl
+            }), use_container_width=True, hide_index=True)
 
 with tab_ia:
     st.markdown("### 💬 Comitê de IA Sênior")
