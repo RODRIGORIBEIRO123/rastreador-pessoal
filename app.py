@@ -1138,7 +1138,7 @@ else:
 # ==========================================
 # 8. ABAS ISOLADAS (SEMPRE ATIVAS)
 # ==========================================
-with t_tes:
+with tab_tesouro:
     st.markdown("### 🏛️ Simulador e Controle de Tesouro Direto")
     st.info("Faça o upload da sua planilha de controle do Tesouro ou insira os títulos manualmente. O sistema calculará o valor futuro baseado na inflação real vigente.")
     
