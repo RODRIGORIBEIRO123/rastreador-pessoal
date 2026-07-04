@@ -12,7 +12,6 @@ import os
 import sqlite3
 import hashlib
 
-# Tentativa de importação da biblioteca python-docx para exportação de relatórios da IA
 try:
     import docx
     HAS_DOCX = True
@@ -34,7 +33,6 @@ def f_pct(x):
     return f"{float(x):,.2f}%".replace(",", "v").replace(".", ",").replace("v", ".")
 
 def to_excel(df, sheet_name='Sheet1'):
-    """Gera um arquivo Excel formatado e estilizado em memória para download."""
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         df.to_excel(writer, index=False, sheet_name=sheet_name)
@@ -61,6 +59,7 @@ def to_excel(df, sheet_name='Sheet1'):
                 data_cell = worksheet.cell(row=row_num, column=col_num)
                 data_cell.font = Font(name="Arial", size=10)
                 data_cell.border = thin_border
+                
                 if isinstance(data_cell.value, (int, float)): 
                     data_cell.alignment = Alignment(horizontal="right")
                 else: 
@@ -73,17 +72,18 @@ def to_excel(df, sheet_name='Sheet1'):
     return output.getvalue()
 
 def export_docx(historico):
-    """Gera o documento do Word com a transcrição da conversa do Comitê de IA."""
     if not HAS_DOCX: 
         return None
+        
     doc = docx.Document()
-    doc.add_heading('Relatório Analítico - Comitê de IA CNPI', 0)
+    doc.add_heading('Relatório Analítico Institucional - Comitê de IA CNPI', 0)
     
     for msg in historico:
         if msg["role"] == "user":
             doc.add_heading("Consulta Operacional:", level=2)
         else:
             doc.add_heading("Parecer da Gestora IA:", level=2)
+            
         doc.add_paragraph(msg["content"])
         
     bio = io.BytesIO()
@@ -95,21 +95,31 @@ MAPEAMENTO_TICKERS = {
     "VVAR3": "BHIA3", "VIIA3": "BHIA3", "BRML3": "ALSO3", 
     "BBRK11": "BRCR11", "HCTR11": "TRXD11", "TORD11": "TRXD11"
 }
-UNITS_ACOES = ['SANB11', 'TAEE11', 'KLBN11', 'BPAC11', 'ALUP11', 'ENGI11', 'BIDI11', 'CPLE11', 'SAPR11', 'RNEW11']
+
+UNITS_ACOES = [
+    'SANB11', 'TAEE11', 'KLBN11', 'BPAC11', 'ALUP11', 
+    'ENGI11', 'BIDI11', 'CPLE11', 'SAPR11', 'RNEW11'
+]
 
 # Inicialização de Variáveis de Sessão para garantir a persistência na navegação
 if 'df_base' not in st.session_state: 
     st.session_state.df_base = pd.DataFrame()
+    
 if 'df_tesouro' not in st.session_state: 
     st.session_state.df_tesouro = pd.DataFrame()
+    
 if 'dados_mercado' not in st.session_state: 
     st.session_state.dados_mercado = {}
+    
 if 'df_simul' not in st.session_state: 
     st.session_state.df_simul = pd.DataFrame()
+    
 if 'logged_in' not in st.session_state: 
     st.session_state.logged_in = False
+    
 if 'username' not in st.session_state: 
     st.session_state.username = ""
+    
 if 'historico_chat' not in st.session_state: 
     st.session_state.historico_chat = []
 
@@ -149,7 +159,7 @@ def registrar_usuario(username, password):
     conn = get_db_connection()
     c = conn.cursor()
     try:
-        c.execute(f"INSERT INTO usuarios (username, password) VALUES ({PARAM}, {PARAM})", (username, hash_password(password)))
+        c.execute(f"INSERT INTO usuarios (username, password) VALUES ({PARAM}, {PARAM})", (username.strip(), hash_password(password)))
         conn.commit()
         conn.close()
         return True
@@ -160,20 +170,22 @@ def registrar_usuario(username, password):
 def autenticar_usuario(username, password):
     conn = get_db_connection()
     c = conn.cursor()
-    c.execute(f"SELECT * FROM usuarios WHERE username={PARAM} AND password={PARAM}", (username, hash_password(password)))
+    c.execute(f"SELECT * FROM usuarios WHERE username={PARAM} AND password={PARAM}", (username.strip(), hash_password(password)))
     user = c.fetchone()
     conn.close()
     return user is not None
 
 def atualizar_senha(username, nova_senha):
+    usr = username.strip()
     conn = get_db_connection()
     c = conn.cursor()
-    c.execute(f"SELECT * FROM usuarios WHERE username={PARAM}", (username,))
+    c.execute(f"SELECT * FROM usuarios WHERE username={PARAM}", (usr,))
     user = c.fetchone()
     if user is None:
         conn.close()
         return False
-    c.execute(f"UPDATE usuarios SET password={PARAM} WHERE username={PARAM}", (hash_password(nova_senha), username))
+        
+    c.execute(f"UPDATE usuarios SET password={PARAM} WHERE username={PARAM}", (hash_password(nova_senha), usr))
     conn.commit()
     conn.close()
     return True
@@ -181,49 +193,60 @@ def atualizar_senha(username, nova_senha):
 def salvar_dados_completos_db(username):
     conn = get_db_connection()
     c = conn.cursor()
+    usr = username.strip()
     
     # 1. Salvar Carteira B3
-    c.execute(f"DELETE FROM carteiras WHERE username={PARAM}", (username,))
+    c.execute(f"DELETE FROM carteiras WHERE username={PARAM}", (usr,))
     if not st.session_state.df_base.empty:
         for _, row in st.session_state.df_base.iterrows():
             c.execute(f"INSERT INTO carteiras (username, ativo, quantidade, preco_medio, data_media) VALUES ({PARAM}, {PARAM}, {PARAM}, {PARAM}, {PARAM})",
-                      (username, row['Ativo'], float(row['Quantidade']), float(row['Preço Médio']), str(row['Data Média'])))
+                      (usr, row['Ativo'], float(row['Quantidade']), float(row['Preço Médio']), str(row['Data Média'])))
             
     # 2. Salvar Tesouro Direto
-    c.execute(f"DELETE FROM tesouro WHERE username={PARAM}", (username,))
+    c.execute(f"DELETE FROM tesouro WHERE username={PARAM}", (usr,))
     if not st.session_state.df_tesouro.empty:
         for _, row in st.session_state.df_tesouro.iterrows():
             c.execute(f"INSERT INTO tesouro (username, titulo, investido, taxa, vencimento) VALUES ({PARAM}, {PARAM}, {PARAM}, {PARAM}, {PARAM})",
-                      (username, row['Título'], float(row['Valor Investido (R$)']), float(row['Taxa Anual (%)']), int(row['Ano Vencimento'])))
+                      (usr, row['Título'], float(row['Valor Investido (R$)']), float(row['Taxa Anual (%)']), int(row['Ano Vencimento'])))
             
     # 3. Salvar Histórico do Comitê de IA
-    c.execute(f"DELETE FROM chat_ia WHERE username={PARAM}", (username,))
+    c.execute(f"DELETE FROM chat_ia WHERE username={PARAM}", (usr,))
     for msg in st.session_state.historico_chat[-40:]:
-        c.execute(f"INSERT INTO chat_ia (username, role, content) VALUES ({PARAM}, {PARAM}, {PARAM})", (username, msg['role'], msg['content']))
+        c.execute(f"INSERT INTO chat_ia (username, role, content) VALUES ({PARAM}, {PARAM}, {PARAM})", (usr, msg['role'], msg['content']))
         
     conn.commit()
     conn.close()
 
 def carregar_dados_completos_db(username):
     conn = get_db_connection()
+    usr = username.strip()
     
     # 1. Carregar Carteira B3 (Blindado contra erro de sintaxe SQL)
     query_cart = f"SELECT Ativo, Quantidade, Preco_Medio, Data_Media FROM carteiras WHERE username={PARAM}"
-    df_cart = pd.read_sql_query(query_cart, conn, params=(username,))
+    df_cart = pd.read_sql_query(query_cart, conn, params=(usr,))
     df_cart = df_cart.rename(columns={"Preco_Medio": "Preço Médio", "preco_medio": "Preço Médio", "Data_Media": "Data Média", "data_media": "Data Média", "ativo": "Ativo", "quantidade": "Quantidade"})
+    
     if not df_cart.empty: 
         df_cart['Data Média'] = pd.to_datetime(df_cart['Data Média']).dt.date
+    else:
+        df_cart = pd.DataFrame(columns=["Ativo", "Quantidade", "Preço Médio", "Data Média"])
+        
     st.session_state.df_base = df_cart
     
     # 2. Carregar Tesouro Direto
     query_tes = f"SELECT titulo, investido, taxa, vencimento FROM tesouro WHERE username={PARAM}"
-    df_tes = pd.read_sql_query(query_tes, conn, params=(username,))
+    df_tes = pd.read_sql_query(query_tes, conn, params=(usr,))
     df_tes = df_tes.rename(columns={"titulo": "Título", "investido": "Valor Investido (R$)", "taxa": "Taxa Anual (%)", "vencimento": "Ano Vencimento"})
+    
+    if df_tes.empty:
+        df_tes = pd.DataFrame(columns=["Título", "Valor Investido (R$)", "Taxa Anual (%)", "Ano Vencimento"])
+        
     st.session_state.df_tesouro = df_tes
     
     # 3. Carregar Histórico de IA
     query_chat = f"SELECT role, content FROM chat_ia WHERE username={PARAM}"
-    df_chat = pd.read_sql_query(query_chat, conn, params=(username,))
+    df_chat = pd.read_sql_query(query_chat, conn, params=(usr,))
+    
     if not df_chat.empty: 
         st.session_state.historico_chat = df_chat.to_dict('records')
     else: 
@@ -234,19 +257,21 @@ def carregar_dados_completos_db(username):
 init_db()
 
 # ==========================================
-# 3. TELA DE AUTENTICAÇÃO (GATEKEEPER)
+# 3. GATEKEEPER - TELA DE AUTENTICAÇÃO
 # ==========================================
 if not st.session_state.logged_in:
     st.markdown("<h1 style='text-align: center;'>🔐 Terminal de Gestão Profissional</h1>", unsafe_allow_html=True)
     st.markdown("<p style='text-align: center;'>Acesso restrito. Identifique-se para carregar seu portfólio.</p>", unsafe_allow_html=True)
     
     col_log1, col_log2, col_log3 = st.columns([1, 1, 1])
+    
     with col_log2:
         tab_login, tab_register, tab_forgot = st.tabs(["Acesso", "Novo Registro", "Recuperar Senha"])
         
         with tab_login:
-            login_user = st.text_input("Usuário", key="log_user")
+            login_user = st.text_input("Usuário", key="log_user").strip()
             login_pass = st.text_input("Senha", type="password", key="log_pass")
+            
             if st.button("Entrar no Terminal", use_container_width=True):
                 if autenticar_usuario(login_user, login_pass):
                     st.session_state.logged_in = True
@@ -257,8 +282,9 @@ if not st.session_state.logged_in:
                     st.error("Credenciais inválidas.")
                 
         with tab_register:
-            reg_user = st.text_input("Novo Usuário", key="reg_user")
+            reg_user = st.text_input("Novo Usuário", key="reg_user").strip()
             reg_pass = st.text_input("Nova Senha", type="password", key="reg_pass")
+            
             if st.button("Registrar Acesso", use_container_width=True):
                 if reg_user and reg_pass:
                     if registrar_usuario(reg_user, reg_pass): 
@@ -269,13 +295,15 @@ if not st.session_state.logged_in:
                     st.warning("Preencha ambos os campos corretamente.")
                 
         with tab_forgot:
-            forgot_user = st.text_input("Usuário Cadastrado", key="for_user")
+            forgot_user = st.text_input("Usuário Cadastrado", key="for_user").strip()
             forgot_pass = st.text_input("Nova Senha Desejada", type="password", key="for_pass")
+            
             if st.button("Redefinir Senha", use_container_width=True):
                 if atualizar_senha(forgot_user, forgot_pass): 
                     st.success("Sua senha foi redefinida com sucesso.")
                 else: 
                     st.error("Usuário não encontrado no banco de dados.")
+                    
     st.stop()
     # ==========================================
 # 4. FUNÇÕES DE PROCESSAMENTO B3 E MACRO
@@ -290,7 +318,6 @@ st.write("---")
 
 @st.cache_data(ttl=86400)
 def obter_macro_atual():
-    """Busca Selic e IPCA em tempo real com dupla verificação."""
     selic_atual = 10.50
     ipca_12m = 4.00
     
@@ -305,14 +332,16 @@ def obter_macro_atual():
             selic_df = sgs.get({'selic': 432}, last=1)
             if not selic_df.empty: 
                 selic_atual = float(selic_df['selic'].iloc[-1])
-        except: pass
-        
+        except: 
+            pass
+            
     try:
         ipca_df = sgs.get({'IPCA_12M': 13522}, last=1)
         if not ipca_df.empty: 
             ipca_12m = float(ipca_df['IPCA_12M'].iloc[-1])
-    except: pass
-    
+    except: 
+        pass
+        
     return selic_atual, ipca_12m
 
 @st.cache_data(ttl=86400)
@@ -339,14 +368,15 @@ def carregar_dados_mercado():
                 'lpa': c/pl if pl > 0 else 0.0
             }
     except Exception as e: 
-        print(f"Alerta de conexão: {e}")
         pass
     
     ano_at = pd.Timestamp.now().year
     proj = {}
+    
     try:
         url_focus = "https://olinda.bcb.gov.br/olinda/servico/Expectativas/versao/v1/odata/ExpectativasMercadoAnuais?$top=300&$filter=Indicador%20eq%20'IPCA'%20or%20Indicador%20eq%20'Selic'&$orderby=Data%20desc&$format=json"
         df_p = pd.DataFrame(requests.get(url_focus, timeout=5).json().get('value', []))
+        
         if not df_p.empty:
             df_p = df_p[df_p['Data'] == df_p['Data'].max()]
             for ao in [0, 1, 2]:
@@ -365,8 +395,10 @@ selic_hoje, ipca_12m_hoje = obter_macro_atual()
 df_macro, fundamentos_br, proj_focus, ano_atual = carregar_dados_mercado()
 
 def limpar_numero(x):
-    if pd.isna(x): return 0.0
-    if isinstance(x, (int, float, np.number)): return float(x)
+    if pd.isna(x): 
+        return 0.0
+    if isinstance(x, (int, float, np.number)): 
+        return float(x)
     try: 
         return float(str(x).replace('R$', '').replace('.', '').replace(',', '.').strip())
     except: 
@@ -384,8 +416,9 @@ def traduzir_setor(setor_en):
     return dicionario.get(setor_en, "Outros Setores")
 
 def consolidar_carteira(df):
-    """Consolida operações calculando o PM e zerando o que foi liquidado."""
-    if df.empty: return df
+    if df.empty: 
+        return df
+        
     df['Ativo'] = df['Ativo'].astype(str).str.strip().str.upper().apply(lambda x: MAPEAMENTO_TICKERS.get(x, x))
     linhas = []
     
@@ -405,8 +438,8 @@ def consolidar_carteira(df):
     return pd.DataFrame(linhas)
 
 def corrigir_cabecalho_b3(df):
-    """Rastreia cabeçalhos na B3 que geralmente começam na linha 2 ou 3 do Excel."""
-    if df.empty: return df
+    if df.empty: 
+        return df
     if 'Data do Negócio' in df.columns or 'Data Média' in df.columns: 
         return df
         
@@ -430,6 +463,7 @@ def corrigir_cabecalho_b3(df):
         return None, False
 
     mapeamento, is_mov = tentar_mapear(df.columns.tolist())
+    
     if mapeamento and ('Data do Negócio' in mapeamento.values() or 'Código de Negociação' in mapeamento.values()):
         df = df.rename(columns=mapeamento)
         if is_mov and 'Valor' not in df.columns and 'Preço Unitário' in df.columns and 'Quantidade' in df.columns:
@@ -449,9 +483,9 @@ def corrigir_cabecalho_b3(df):
     return df
 
 def processar_planilha_b3(df):
-    """Lógica pesada para extrair compra e venda das planilhas brutas da B3."""
-    if df.empty: return pd.DataFrame()
-    
+    if df.empty: 
+        return pd.DataFrame()
+        
     df['Data do Negócio'] = pd.to_datetime(df['Data do Negócio'], dayfirst=True, errors='coerce')
     df['Quantidade'] = df['Quantidade'].apply(limpar_numero)
     
@@ -463,11 +497,12 @@ def processar_planilha_b3(df):
         df['Valor'] = 0.0
 
     df = df.sort_values('Data do Negócio')
-    
     posicoes = {}
+    
     for _, row in df.iterrows():
-        if pd.isna(row.get('Código de Negociação')): continue
-        
+        if pd.isna(row.get('Código de Negociação')): 
+            continue
+            
         ticker_raw = str(row['Código de Negociação']).strip().upper()
         if " - " in ticker_raw: 
             ticker_raw = ticker_raw.split(" - ")[0].strip()
@@ -476,7 +511,6 @@ def processar_planilha_b3(df):
             
         ticker = MAPEAMENTO_TICKERS.get(ticker_raw[:-1] if ticker_raw.endswith('F') and len(ticker_raw) > 4 else ticker_raw, ticker_raw[:-1] if ticker_raw.endswith('F') and len(ticker_raw) > 4 else ticker_raw)
         
-        # Filtro de segurança: se não tem dígito, não é ticker da B3
         if not any(c.isdigit() for c in ticker) or len(ticker) < 4: 
             continue
             
@@ -539,23 +573,23 @@ def processar_planilha_b3(df):
     return consolidar_carteira(pd.DataFrame(ativos_finais))
 
 # ==========================================
-# 5. SIDEBAR: UPLOAD, INTEGRAÇÃO E BACKUP
+# 5. SIDEBAR: UPLOAD, INTEGRAÇÃO B3 E BACKUP
 # ==========================================
 with st.sidebar:
     st.markdown("### 👤 ANALISTA OPERACIONAL")
-    
     if st.button("🚪 Sair do Terminal", use_container_width=True):
-        # O comando clear() oblitera toda a memória residual do navegador
         st.session_state.clear()
         st.rerun()
         
     st.divider()
+    
     st.markdown("### 💾 Segurança em Nuvem")
     if st.button("Sincronizar no Banco de Dados", type="primary", use_container_width=True):
         salvar_dados_completos_db(st.session_state.username)
         st.success("Dados blindados no banco com sucesso!")
         
     st.divider()
+    
     st.markdown("### 1. Integrar Notas B3 (Opcional)")
     st.info("Faça o upload de planilhas para substituir toda a base ou apenas integrar novas operações à carteira atual.")
     
@@ -677,6 +711,10 @@ with c_op3:
             file_name=f"Carteira_Ajustada_{st.session_state.username}.csv", 
             use_container_width=True
         )
+    st.write("")
+    if st.button("💾 Salvar no Banco de Dados", type="primary", use_container_width=True):
+        salvar_dados_completos_db(st.session_state.username)
+        st.success("Dados blindados no banco com sucesso!")
 
 st.markdown("#### 📝 Tabela Editável (Ajuste Fino de Quantidade e Preço Médio)")
 st.info("Ajuste quantidades ou preços médios diretamente nas células da tabela abaixo antes de conectar aos servidores da B3.")
@@ -760,11 +798,10 @@ if st.button("🚀 Conectar ao Mercado Vivo", type="primary", use_container_widt
         st.warning("A carteira está vazia. Adicione ativos antes de conectar.")
 
 st.write("---")
-
 # ==========================================
 # 7. DASHBOARDS E RELATÓRIOS (TABS DE ANÁLISE)
 # ==========================================
-t1, t2, t3, t4, t5, t_tes, t6 = st.tabs([
+tab_visao, tab_val, tab_radar, tab_graf, tab_prov, tab_tesouro, tab_ia = st.tabs([
     "📊 Visão Geral", 
     "💰 Valuation", 
     "🎯 Radar & Projeção", 
@@ -803,7 +840,7 @@ if st.session_state.dados_mercado:
         
     df_perf_final = pd.DataFrame(l_pf)
 
-    with t1:
+    with tab_visao:
         st.markdown("### 🏆 Visão Global da Carteira")
         
         df_a = df_perf_final[df_perf_final['Tipo'] == 'Ação']
@@ -827,7 +864,7 @@ if st.session_state.dados_mercado:
         
         st.dataframe(df_perf_final.drop(columns=['Tipo', 'Setor']).style.format(formatacao_t1), use_container_width=True, hide_index=True)
 
-    with t2:
+    with tab_val:
         st.markdown("#### Métodos Certificados de Valuation")
         st.markdown("""
         * **Preço Teto Decio Bazin:** Calcula o preço máximo ideal para compra focado em retornos via dividendos.
@@ -865,7 +902,7 @@ if st.session_state.dados_mercado:
         }
         st.dataframe(st.session_state.df_recs_val.style.format(formatacao_t2), use_container_width=True, hide_index=True)
 
-    with t3: 
+    with tab_radar: 
         st.markdown("##### Parametrização do Radar Operacional")
         c_p1, c_p2, c_p3, c_p4 = st.columns(4)
         patr_fora = c_p1.number_input("Patrimônio Externo / Caixa (R$):", value=0.0, step=1000.0)
@@ -891,16 +928,22 @@ if st.session_state.dados_mercado:
         
         for _, row in df_radar.iterrows():
             if row['Teto Bazin'] > 0:
-                if row['Margem Bazin (%)'] >= mb_ex: status_bazin.append("COMPRA 🟢")
-                elif row['Margem Bazin (%)'] >= -5: status_bazin.append("MANTER 🟡")
-                else: status_bazin.append("VENDA 🔴")
+                if row['Margem Bazin (%)'] >= mb_ex: 
+                    status_bazin.append("COMPRA 🟢")
+                elif row['Margem Bazin (%)'] >= -5: 
+                    status_bazin.append("MANTER 🟡")
+                else: 
+                    status_bazin.append("VENDA 🔴")
             else:
                 status_bazin.append("MANTER 🟡")
                 
             if row['Tipo'] == 'Ação' and pd.notna(row['Justo Graham']) and row['Justo Graham'] > 0:
-                if row['Margem Graham (%)'] >= mg_ex: status_graham.append("COMPRA 🟢")
-                elif row['Margem Graham (%)'] >= 0: status_graham.append("MANTER 🟡")
-                else: status_graham.append("VENDA 🔴")
+                if row['Margem Graham (%)'] >= mg_ex: 
+                    status_graham.append("COMPRA 🟢")
+                elif row['Margem Graham (%)'] >= 0: 
+                    status_graham.append("MANTER 🟡")
+                else: 
+                    status_graham.append("VENDA 🔴")
             else:
                 status_graham.append("-")
                 
@@ -926,7 +969,13 @@ if st.session_state.dados_mercado:
                 ac_jd += (gc + div_m)
                 ac_ap += aporte
                 saldo_dinamico += (gc + div_m + aporte)
-                lp.append({"Mês": f"Mês {m}", "Capital Inicial": df_perf_final['Saldo Atual'].sum() + patr_fora, "Aportes Acumulados": ac_ap, "Juros/Divs Acumulados": ac_jd})
+                
+                lp.append({
+                    "Mês": f"Mês {m}", 
+                    "Capital Inicial": df_perf_final['Saldo Atual'].sum() + patr_fora, 
+                    "Aportes Acumulados": ac_ap, 
+                    "Juros/Divs Acumulados": ac_jd
+                })
                 
         df_proj_plot = pd.DataFrame(lp)
         df_melt_proj = df_proj_plot.melt(id_vars=["Mês"], value_vars=["Capital Inicial", "Aportes Acumulados", "Juros/Divs Acumulados"], var_name="Componente", value_name="Valor (R$)")
@@ -934,11 +983,10 @@ if st.session_state.dados_mercado:
         fig_proj = px.bar(df_melt_proj, x="Mês", y="Valor (R$)", color="Componente", title="Evolução Patrimonial Controlada", color_discrete_sequence=['#1f4e78', '#00a896', '#f4a261'])
         st.plotly_chart(fig_proj, use_container_width=True)
 
-    with t4:
+    with tab_graf:
         st.markdown("#### Gráficos de Distribuição Patrimonial")
         cg1, cg2 = st.columns(2)
         
-        # Paleta Institucional Moderna
         paleta = ['#003f5c', '#2f4b7c', '#665191', '#a05195', '#d45087', '#f95d6a', '#ff7c43', '#ffa600']
         
         cg1.plotly_chart(px.pie(df_perf_final, values='Saldo Atual', names='Ativo', title="Por Ativo", color_discrete_sequence=paleta), use_container_width=True)
@@ -949,6 +997,7 @@ if st.session_state.dados_mercado:
         
         ativos_disponiveis = sorted(df_perf_final['Ativo'].unique().tolist())
         c_f_g1, c_f_g2 = st.columns(2)
+        
         atv_sel = c_f_g1.multiselect("Comparar Ativos Específicos:", options=ativos_disponiveis, default=ativos_disponiveis[:5] if len(ativos_disponiveis) >= 5 else ativos_disponiveis)
         ind_sel = c_f_g2.multiselect("Comparar com os Indexadores:", ['CDI', 'IPCA'], default=['CDI', 'IPCA'])
         
@@ -956,54 +1005,73 @@ if st.session_state.dados_mercado:
         
         if janela == "Desde a Data de Compra (Automático)":
             if atv_sel:
-                df_comp = df_perf_final[df_perf_final['Ativo'].isin(atv_sel)][['Ativo', 'Evolução c/ Div (%)', 'CDI Acum. (%)', 'IPCA Acum. (%)']].rename(columns={'Evolução c/ Div (%)': 'Carteira (c/ Div)', 'CDI Acum. (%)': 'CDI', 'IPCA Acum. (%)': 'IPCA'})
-                df_melt = df_comp[['Ativo', 'Carteira (c/ Div)'] + ind_sel].melt(id_vars='Ativo', var_name='Indicador', value_name='Rentabilidade (%)')
-                fig_comp = px.bar(df_melt, x='Ativo', y='Rentabilidade (%)', color='Indicador', barmode='group', color_discrete_map={'Carteira (c/ Div)': '#003f5c', 'CDI': '#00a896', 'IPCA': '#f4a261'}, title="Rentabilidade Acumulada no Tempo Real de Posse")
+                df_comp = df_perf_final[df_perf_final['Ativo'].isin(atv_sel)][['Ativo', 'Evolução c/ Div (%)', 'CDI Acum. (%)', 'IPCA Acum. (%)']].copy()
+                df_comp = df_comp.rename(columns={'Evolução c/ Div (%)': 'Carteira (c/ Div)', 'CDI Acum. (%)': 'CDI', 'IPCA Acum. (%)': 'IPCA'})
+                
+                colunas_manter = ['Ativo', 'Carteira (c/ Div)'] + [ind for ind in ind_sel]
+                df_comp = df_comp[colunas_manter]
+                df_melt = df_comp.melt(id_vars='Ativo', var_name='Indicador', value_name='Rentabilidade (%)')
+                
+                fig_comp = px.bar(
+                    df_melt, x='Ativo', y='Rentabilidade (%)', color='Indicador', barmode='group',
+                    color_discrete_map={'Carteira (c/ Div)': '#003f5c', 'CDI': '#00a896', 'IPCA': '#f4a261'},
+                    title="Rentabilidade Acumulada no Tempo de Posse"
+                )
                 st.plotly_chart(fig_comp, use_container_width=True)
+            else:
+                st.warning("Selecione ao menos um ativo para visualizar o gráfico.")
         else:
             c_dt1, c_dt2 = st.columns(2)
             dt_ini = c_dt1.date_input("De:", pd.Timestamp.now().date() - pd.Timedelta(days=365))
             dt_fim = c_dt2.date_input("Até:", pd.Timestamp.now().date())
             
-            if st.button("Gerar Gráfico Comparativo", use_container_width=True) and atv_sel:
-                with st.spinner("Calculando série histórica..."):
-                    cdi_m, ipca_m = 0.0, 0.0
-                    if not df_macro.empty:
-                        try:
-                            f_m = df_macro.loc[dt_ini:dt_fim]
-                            cdi_m = ((1 + f_m['CDI'].dropna()).prod() - 1) * 100
-                            ipca_m = ((1 + f_m['IPCA'].dropna()).prod() - 1) * 100
-                        except: pass
+            if st.button("Gerar Gráfico Comparativo", use_container_width=True):
+                if atv_sel:
+                    with st.spinner("Calculando série histórica..."):
+                        cdi_m, ipca_m = 0.0, 0.0
+                        if not df_macro.empty:
+                            try:
+                                f_m = df_macro.loc[dt_ini:dt_fim]
+                                cdi_m = ((1 + f_m['CDI'].dropna()).prod() - 1) * 100
+                                ipca_m = ((1 + f_m['IPCA'].dropna()).prod() - 1) * 100
+                            except: pass
+                            
+                        l_res = []
+                        for t in atv_sel:
+                            r_atv = 0.0
+                            try:
+                                ht = yf.Ticker(f"{t}.SA").history(start=dt_ini, end=dt_fim)
+                                if not ht.empty and len(ht) >= 2:
+                                    p_i = ht['Close'].iloc[0]
+                                    p_f = ht['Close'].iloc[-1]
+                                    d_p = 0.0
+                                    try:
+                                        al_d = yf.Ticker(f"{t}.SA").dividends
+                                        if not al_d.empty:
+                                            if al_d.index.tz is not None: al_d.index = al_d.index.tz_localize(None)
+                                            d_p = al_d[(al_d.index >= pd.Timestamp(dt_ini)) & (al_d.index <= pd.Timestamp(dt_fim))].sum()
+                                    except: pass
+                                    r_atv = ((p_f + d_p) / p_i - 1) * 100
+                            except: pass
+                            
+                            it_m = {'Ativo': t, 'Carteira (c/ Div)': r_atv}
+                            if 'CDI' in ind_sel: it_m['CDI'] = cdi_m
+                            if 'IPCA' in ind_sel: it_m['IPCA'] = ipca_m
+                            l_res.append(it_m)
                         
-                    l_res = []
-                    for t in atv_sel:
-                        r_atv = 0.0
-                        try:
-                            ht = yf.Ticker(f"{t}.SA").history(start=dt_ini, end=dt_fim)
-                            if not ht.empty and len(ht) >= 2:
-                                p_i = ht['Close'].iloc[0]
-                                p_f = ht['Close'].iloc[-1]
-                                d_p = 0.0
-                                try:
-                                    al_d = yf.Ticker(f"{t}.SA").dividends
-                                    if not al_d.empty:
-                                        if al_d.index.tz is not None: al_d.index = al_d.index.tz_localize(None)
-                                        d_p = al_d[(al_d.index >= pd.Timestamp(dt_ini)) & (al_d.index <= pd.Timestamp(dt_fim))].sum()
-                                except: pass
-                                r_atv = ((p_f + d_p) / p_i - 1) * 100
-                        except: pass
-                        
-                        it_m = {'Ativo': t, 'Carteira (c/ Div)': r_atv}
-                        if 'CDI' in ind_sel: it_m['CDI'] = cdi_m
-                        if 'IPCA' in ind_sel: it_m['IPCA'] = ipca_m
-                        l_res.append(it_m)
-                    
-                    df_m_plot = pd.DataFrame(l_res)
-                    if not df_m_plot.empty:
-                        fig_comp_m = px.bar(df_m_plot.melt(id_vars='Ativo', var_name='Indicador', value_name='Rentabilidade (%)'), x='Ativo', y='Rentabilidade (%)', color='Indicador', barmode='group', color_discrete_map={'Carteira (c/ Div)': '#003f5c', 'CDI': '#00a896', 'IPCA': '#f4a261'}, title=f"Desempenho Customizado de {dt_ini.strftime('%d/%m/%Y')} até {dt_fim.strftime('%d/%m/%Y')}")
-                        st.plotly_chart(fig_comp_m, use_container_width=True)
+                        df_m_plot = pd.DataFrame(l_res)
+                        if not df_m_plot.empty:
+                            df_melt_m = df_m_plot.melt(id_vars='Ativo', var_name='Indicador', value_name='Rentabilidade (%)')
+                            fig_comp_m = px.bar(
+                                df_melt_m, x='Ativo', y='Rentabilidade (%)', color='Indicador', barmode='group',
+                                color_discrete_map={'Carteira (c/ Div)': '#003f5c', 'CDI': '#00a896', 'IPCA': '#f4a261'},
+                                title=f"Desempenho Customizado de {dt_ini.strftime('%d/%m/%Y')} até {dt_fim.strftime('%d/%m/%Y')}"
+                            )
+                            st.plotly_chart(fig_comp_m, use_container_width=True)
+                else:
+                    st.warning("Selecione ao menos um ativo para visualizar o gráfico.")
 
-    with t5:
+    with tab_prov:
         st.markdown("### 💸 Proventos Mensais e Status de Pagamento B3")
         cf1, cf2, c_btn = st.columns([2, 2, 2])
         m_map = {1:"Janeiro", 2:"Fevereiro", 3:"Março", 4:"Abril", 5:"Maio", 6:"Junho", 7:"Julho", 8:"Agosto", 9:"Setembro", 10:"Outubro", 11:"Novembro", 12:"Dezembro"}
@@ -1015,14 +1083,15 @@ if st.session_state.dados_mercado:
         a_sel = cf2.selectbox("Ano de Referência:", options=[a_hoje, a_hoje-1, a_hoje-2])
         
         if c_btn.button("🔄 Processar Renda Mensal", use_container_width=True):
-            with st.spinner("Buscando agenda de pagamentos de todos os ativos na B3..."):
+            with st.spinner("Buscando agenda de pagamentos na B3..."):
                 la, lf = [], []
                 for t_tk, dm in st.session_state.dados_mercado.items():
                     val = 0.0
                     try:
                         divs = yf.Ticker(f"{t_tk}.SA").dividends
                         if not divs.empty:
-                            if divs.index.tz is not None: divs.index = divs.index.tz_localize(None)
+                            if divs.index.tz is not None: 
+                                divs.index = divs.index.tz_localize(None)
                             val = float(divs[(divs.index.month == m_sel) & (divs.index.year == a_sel)].sum())
                     except: pass
                     
@@ -1031,12 +1100,21 @@ if st.session_state.dados_mercado:
                     
                     if dm['Tipo'] == 'FII':
                         lf.append({
-                            "Fundo (FII)": t_tk, "Unitário (R$)": val, "Recebido (R$)": rec, "Yield on Cost (%)": yoc, 
+                            "Fundo (FII)": t_tk, 
+                            "Unitário (R$)": val, 
+                            "Recebido (R$)": rec, 
+                            "Yield on Cost (%)": yoc, 
                             "Status": "Divulgado / Pago 🟢" if val > 0 else "Aguardando 🟡"
                         })
                     else:
                         if val > 0: 
-                            la.append({"Ação": t_tk, "Unitário (R$)": val, "Recebido (R$)": rec, "Yield on Cost (%)": yoc, "Status": "Pago 🟢"})
+                            la.append({
+                                "Ação": t_tk, 
+                                "Unitário (R$)": val, 
+                                "Recebido (R$)": rec, 
+                                "Yield on Cost (%)": yoc, 
+                                "Status": "Pago 🟢"
+                            })
                 
                 st.session_state.divs_a = pd.DataFrame(la)
                 st.session_state.divs_f = pd.DataFrame(lf)
@@ -1056,16 +1134,17 @@ if st.session_state.dados_mercado:
                 st.dataframe(st.session_state.divs_a.style.format({"Unitário (R$)": f_brl_4, "Recebido (R$)": f_brl, "Yield on Cost (%)": f_pct}), use_container_width=True, hide_index=True)
                 tot_mes += st.session_state.divs_a['Recebido (R$)'].sum()
                 
-            st.success(f"**💰 Total de Proventos no Período ({m_map[st.session_state.divs_m]}/{st.session_state.divs_ano}):** {f_brl(tot_mes)}")
+            st.success(f"**💰 Total Estimado de Proventos no Período ({m_map[st.session_state.divs_m]}/{st.session_state.divs_ano}):** {f_brl(tot_mes)}")
             
         st.markdown("---")
-        st.markdown("### 🏛️ Histórico Analítico de Proventos (Todo o Tempo de Posse)")
+        st.markdown("### 🏛️ Histórico Analítico de Proventos (Tempo de Posse)")
         l_hist = []
         for t_hist, dm_hist in st.session_state.dados_mercado.items():
             try:
                 divs_h = yf.Ticker(f"{t_hist}.SA").dividends
                 if not divs_h.empty:
-                    if divs_h.index.tz is not None: divs_h.index = divs_h.index.tz_localize(None)
+                    if divs_h.index.tz is not None: 
+                        divs_h.index = divs_h.index.tz_localize(None)
                     divs_fil = divs_h[divs_h.index >= pd.Timestamp(dm_hist['Data'])]
                     for d_idx, val_h in divs_fil.items():
                         t_rec = val_h * dm_hist['Qtd']
@@ -1074,9 +1153,13 @@ if st.session_state.dados_mercado:
                         dy_h = (val_h / dm_hist['Preço Atual']) * 100 if dm_hist['Preço Atual'] > 0 else 0
                         
                         l_hist.append({
-                            "Data Ex": d_idx.date(), "Ativo": t_hist, "Unitário (R$)": float(val_h), 
-                            "Quantidade": int(dm_hist['Qtd']), "Recebido (R$)": float(t_rec), 
-                            "Yield on Cost (%)": float(yoc_h), "DY Atual (%)": float(dy_h)
+                            "Data Ex": d_idx.date(), 
+                            "Ativo": t_hist, 
+                            "Unitário (R$)": float(val_h), 
+                            "Quantidade": int(dm_hist['Qtd']), 
+                            "Recebido (R$)": float(t_rec), 
+                            "Yield on Cost (%)": float(yoc_h), 
+                            "DY Atual (%)": float(dy_h)
                         })
             except: pass
             
@@ -1084,6 +1167,7 @@ if st.session_state.dados_mercado:
             df_hist_tot = pd.DataFrame(l_hist).sort_values("Data Ex", ascending=False)
             c_h1, c_h2 = st.columns(2)
             atvs_disp = sorted(df_hist_tot['Ativo'].unique().tolist())
+            
             atvs_sel = c_h1.multiselect("Filtrar Tabela por Ativo:", options=atvs_disp, default=atvs_disp)
             r_hist = c_h2.date_input("Filtrar Tabela por Período:", value=(min(df_hist_tot['Data Ex']), max(df_hist_tot['Data Ex'])))
             
@@ -1098,14 +1182,14 @@ if st.session_state.dados_mercado:
                 st.download_button(label="📥 Baixar Histórico de Proventos em Planilha (Excel)", data=xls_buffer, file_name=f"Historico_Proventos_{st.session_state.username}.xlsx", mime="application/vnd.ms-excel", use_container_width=True)
 
 else:
-    for tb in [t1, t2, t3, t4, t5]:
+    for tb in [tab_visao, tab_val, tab_radar, tab_graf, tab_prov]:
         with tb: 
             st.info("ℹ️ Adicione ativos na tabela de Controle Manual ou via upload de planilha na barra lateral. Depois, clique em **Conectar ao Mercado Vivo** para preencher essas abas.")
 
 # ==========================================
-# 8. ABAS ISOLADAS (SEMPRE ATIVAS MESMO SEM ATIVOS NA B3)
+# 8. ABAS ISOLADAS (SEMPRE ATIVAS)
 # ==========================================
-with t_tes:
+with tab_tesouro:
     st.markdown("### 🏛️ Simulador de Tesouro Direto")
     st.info("Insira títulos de renda fixa manualmente. O sistema projeta de forma automática os juros compostos exatos até o momento do resgate no vencimento.")
     
@@ -1121,12 +1205,15 @@ with t_tes:
             anos = max(1, int(rt['Ano Vencimento']) - pd.Timestamp.now().year)
             v_final = float(rt['Valor Investido (R$)']) * ((1 + (float(rt['Taxa Anual (%)'])/100)) ** anos)
             res_t.append({
-                "Título": rt['Título'], "Anos P/ Vencer": anos, "Investido": float(rt['Valor Investido (R$)']), 
-                "Valor Bruto no Vencimento": v_final, "Lucro Bruto Projetado": v_final - float(rt['Valor Investido (R$)'])
+                "Título": rt['Título'], 
+                "Anos P/ Vencer": anos, 
+                "Investido": float(rt['Valor Investido (R$)']), 
+                "Valor Bruto no Vencimento": v_final, 
+                "Lucro Bruto Projetado": v_final - float(rt['Valor Investido (R$)'])
             })
         st.dataframe(pd.DataFrame(res_t).style.format({"Investido": f_brl, "Valor Bruto no Vencimento": f_brl, "Lucro Bruto Projetado": f_brl}), use_container_width=True, hide_index=True)
 
-with t6:
+with tab_ia:
     st.markdown("### 💬 Comitê de IA Sênior")
     cb1, cb2 = st.columns(2)
     
@@ -1145,10 +1232,13 @@ with t6:
         api_key_secreta = st.text_input("Insira sua Gemini API Key (Apenas uma vez):", type="password")
         
     for m in st.session_state.historico_chat:
-        with st.chat_message(m["role"]): st.write(m["content"])
+        with st.chat_message(m["role"]): 
+            st.write(m["content"])
         
     if prompt := st.chat_input("Ex: 'A BBAS3 está sendo negociada com desconto?' ou 'Qual sua avaliação da minha carteira?'"):
-        with st.chat_message("user"): st.write(prompt)
+        with st.chat_message("user"): 
+            st.write(prompt)
+            
         st.session_state.historico_chat.append({"role": "user", "content": prompt})
         
         with st.chat_message("assistant"):
@@ -1172,6 +1262,7 @@ with t6:
                         genai.configure(api_key=api_key_secreta)
                         sucesso_ia = False
                         erro_log = ""
+                        
                         for mdl in ['gemini-2.5-flash', 'gemini-1.5-flash']:
                             try:
                                 resposta_ia = genai.GenerativeModel(mdl).generate_content([sys_p, prompt]).text
