@@ -786,8 +786,8 @@ if st.session_state.dados_mercado:
         })
         
     df_perf_final = pd.DataFrame(l_pf)
-    
-with tab_visao:
+
+    with tab_visao:
         st.markdown("### 🏆 Visão Global da Carteira")
         
         df_a = df_perf_final[df_perf_final['Tipo'] == 'Ação']
