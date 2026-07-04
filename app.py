@@ -786,21 +786,34 @@ if st.session_state.dados_mercado:
         })
         
     df_perf_final = pd.DataFrame(l_pf)
-
-    with tab_visao:
+    
+with tab_visao:
         st.markdown("### 🏆 Visão Global da Carteira")
         
         df_a = df_perf_final[df_perf_final['Tipo'] == 'Ação']
         df_f = df_perf_final[df_perf_final['Tipo'] == 'FII']
         
-        ev_a = (df_a['Saldo Atual'].sum() / df_a['Total Investido'].sum() - 1) * 100 if df_a['Total Investido'].sum() > 0 else 0
-        ev_f = (df_f['Saldo Atual'].sum() / df_f['Total Investido'].sum() - 1) * 100 if df_f['Total Investido'].sum() > 0 else 0
+        saldo_acoes = df_a['Saldo Atual'].sum() if not df_a.empty else 0.0
+        saldo_fiis = df_f['Saldo Atual'].sum() if not df_f.empty else 0.0
+        
+        ev_a = (saldo_acoes / df_a['Total Investido'].sum() - 1) * 100 if not df_a.empty and df_a['Total Investido'].sum() > 0 else 0
+        ev_f = (saldo_fiis / df_f['Total Investido'].sum() - 1) * 100 if not df_f.empty and df_f['Total Investido'].sum() > 0 else 0
 
+        # Puxa o total investido no Tesouro (seguro contra nulos)
+        saldo_tesouro = st.session_state.df_tesouro['Valor Investido (R$)'].apply(limpar_numero).sum() if not st.session_state.df_tesouro.empty else 0.0
+        
+        # Consolidação do Patrimônio
+        patrimonio_total = saldo_acoes + saldo_fiis + saldo_tesouro
+
+        # Destaque Executivo do Patrimônio Total
+        st.success(f"💰 **Patrimônio Total Consolidado (Ações + FIIs + Tesouro):** {f_brl(patrimonio_total)}")
+
+        # Métricas Individuais
         m1, m2, m3, m4 = st.columns(4)
-        m1.metric("📈 Patrimônio Ações", f_brl(df_a['Saldo Atual'].sum()), f_pct(ev_a))
-        m2.metric("🏢 Patrimônio FIIs", f_brl(df_f['Saldo Atual'].sum()), f_pct(ev_f))
-        m3.metric("💸 Renda Histórica Ações", f_brl(df_a['Total Div. (R$)'].sum()))
-        m4.metric("💸 Renda Histórica FIIs", f_brl(df_f['Total Div. (R$)'].sum()))
+        m1.metric("📈 Patrimônio Ações", f_brl(saldo_acoes), f_pct(ev_a))
+        m2.metric("🏢 Patrimônio FIIs", f_brl(saldo_fiis), f_pct(ev_f))
+        m3.metric("🏛️ Tesouro Direto", f_brl(saldo_tesouro))
+        m4.metric("💸 Dividendos Históricos", f_brl(df_perf_final['Total Div. (R$)'].sum() if not df_perf_final.empty else 0.0))
 
         formatacao_t1 = {
             c: f_brl for c in ["Preço Médio", "Preço Atual", "Total Investido", "Saldo Atual", "Saldo C/ Dividendos", "Resultado (R$)", "Resultado C/ Dividendos", "Total Div. (R$)"]
@@ -1254,6 +1267,22 @@ with tab_tesouro:
         # Salva apenas os dados base, pois o Valor Futuro é calculado na hora
         st.session_state.df_tesouro = df_editado[colunas_padrao]
         st.rerun()
+
+        # --- NOVO BLOCO: TOTALIZADOR DO TESOURO ---
+    if not df_calc.empty:
+        tot_investido = df_calc['Valor Investido (R$)'].apply(limpar_numero).sum()
+        tot_projetado = df_calc['Valor Futuro no Vencimento'].sum()
+        lucro_projetado = tot_projetado - tot_investido
+        
+        st.markdown("---")
+        st.markdown("#### 📊 Resumo do Tesouro Direto")
+        c_tot1, c_tot2, c_tot3 = st.columns(3)
+        c_tot1.metric("Total Investido", f_brl(tot_investido))
+        c_tot2.metric("Valor Futuro Projetado", f_brl(tot_projetado))
+        
+        # Evita divisão por zero
+        margem_lucro = f_pct((tot_projetado / tot_investido - 1) * 100) if tot_investido > 0 else "0.00%"
+        c_tot3.metric("Lucro Bruto Projetado", f_brl(lucro_projetado), margem_lucro)
 
 with tab_ia:
     st.markdown("### 💬 Comitê de IA Sênior")
