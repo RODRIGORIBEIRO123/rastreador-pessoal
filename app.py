@@ -21,6 +21,32 @@ def f_brl(x): return f"R$ {float(x):,.2f}".replace(",", "v").replace(".", ",").r
 def f_brl_4(x): return f"R$ {float(x):,.4f}".replace(",", "v").replace(".", ",").replace("v", ".")
 def f_pct(x): return f"{float(x):,.2f}%".replace(",", "v").replace(".", ",").replace("v", ".")
 
+def to_excel(df, sheet_name='Sheet1'):
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False, sheet_name=sheet_name)
+        worksheet = writer.sheets[sheet_name]
+        from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+        from openpyxl.utils import get_column_letter
+        header_fill = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
+        header_font = Font(name="Arial", size=11, bold=True, color="FFFFFF")
+        thin_border = Border(left=Side(style='thin', color='D9D9D9'), right=Side(style='thin', color='D9D9D9'), top=Side(style='thin', color='D9D9D9'), bottom=Side(style='thin', color='D9D9D9'))
+        for col_num, column in enumerate(worksheet.columns, 1):
+            cell = worksheet.cell(row=1, column=col_num)
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+            for row_num in range(2, worksheet.max_row + 1):
+                data_cell = worksheet.cell(row=row_num, column=col_num)
+                data_cell.font = Font(name="Arial", size=10)
+                data_cell.border = thin_border
+                if isinstance(data_cell.value, (int, float)): data_cell.alignment = Alignment(horizontal="right")
+                else: data_cell.alignment = Alignment(horizontal="center")
+            max_len = max(len(str(c.value or '')) for c in column)
+            col_letter = get_column_letter(col_num)
+            worksheet.column_dimensions[col_letter].width = max(max_len + 4, 13)
+    return output.getvalue()
+
 MAPEAMENTO_TICKERS = {"GALG11": "GARE11", "SOMA3": "ALOS3", "ARZZ3": "ALOS3", "VVAR3": "BHIA3", "VIIA3": "BHIA3", "BRML3": "ALSO3", "BBRK11": "BRCR11", "HCTR11": "TRXD11", "TORD11": "TRXD11"}
 UNITS_ACOES = ['SANB11', 'TAEE11', 'KLBN11', 'BPAC11', 'ALUP11', 'ENGI11', 'BIDI11', 'CPLE11', 'SAPR11', 'RNEW11']
 
@@ -31,9 +57,8 @@ if 'logged_in' not in st.session_state: st.session_state.logged_in = False
 if 'username' not in st.session_state: st.session_state.username = ""
 
 # ==========================================
-# 2. MOTOR DE BANCO DE DADOS HÍBRIDO (POSTGRESQL / SQLITE)
+# 2. MOTOR DE BANCO DE DADOS HÍBRIDO
 # ==========================================
-# Verifica se a string de conexão do Postgres está configurada nos Secrets do Streamlit
 IS_POSTGRES = "POSTGRES_URL" in st.secrets
 PARAM = "%s" if IS_POSTGRES else "?"
 
@@ -47,11 +72,10 @@ def get_db_connection():
 def init_db():
     conn = get_db_connection()
     c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS usuarios (username TEXT PRIMARY KEY, password TEXT)''')
     if IS_POSTGRES:
-        c.execute('''CREATE TABLE IF NOT EXISTS usuarios (username TEXT PRIMARY KEY, password TEXT)''')
         c.execute('''CREATE TABLE IF NOT EXISTS carteiras (username TEXT, ativo TEXT, quantidade DOUBLE PRECISION, preco_medio DOUBLE PRECISION, data_media TEXT)''')
     else:
-        c.execute('''CREATE TABLE IF NOT EXISTS usuarios (username TEXT PRIMARY KEY, password TEXT)''')
         c.execute('''CREATE TABLE IF NOT EXISTS carteiras (username TEXT, Ativo TEXT, Quantidade REAL, Preco_Medio REAL, Data_Media TEXT)''')
     conn.commit()
     conn.close()
@@ -159,7 +183,13 @@ if not st.session_state.logged_in:
 # ==========================================
 # 4. APP PRINCIPAL: FUNÇÕES DE DADOS E IA
 # ==========================================
-st.title(f"📊 Terminal de Gestão - Analista: {st.session_state.username.upper()} ({pd.Timestamp.now().strftime('%d/%m/%Y')})")
+st.markdown(f"""
+    <div style="text-align: center; margin-bottom: 20px;">
+        <h3 style="font-weight: 400; margin-bottom: 0;">💼 Terminal de Gestão</h3>
+        <h6 style="color: #666; font-weight: 300;">Analista: {st.session_state.username.upper()}</h6>
+    </div>
+""", unsafe_allow_html=True)
+st.write("---")
 
 ARQUIVO_CHAT = f"historico_ia_{st.session_state.username}.json"
 MENSAGEM_INICIAL = [{"role": "assistant", "content": f"Saudações, {st.session_state.username}. O terminal está mapeado em tempo real. Como posso ajudar com a sua carteira ou com o mercado hoje?"}]
@@ -394,7 +424,6 @@ if st.sidebar.button("🚀 Processar", use_container_width=True):
     
     if arquivo_principal:
         txt = arquivo_principal.getvalue().decode('utf-8-sig', errors='ignore') if arquivo_principal.name.endswith('.csv') else None
-        
         if txt:
             linhas_amostra = "".join(txt.split('\n')[:5])
             sep_detectado = '\t' if linhas_amostra.count('\t') > linhas_amostra.count(';') and linhas_amostra.count('\t') > linhas_amostra.count(',') else (';' if linhas_amostra.count(';') >= linhas_amostra.count(',') else ',')
@@ -432,7 +461,23 @@ if st.sidebar.button("🚀 Processar", use_container_width=True):
     st.rerun()
 
 # ==========================================
-# 8. DASHBOARD E RELATÓRIOS
+# 6. PAINEL MACRO (SEMPRE VISÍVEL)
+# ==========================================
+proj_focus, ano_atual = obter_projecoes_focus()
+selic_hoje, ipca_12m_hoje = obter_macro_atual()
+
+st.markdown("### 👑 Conjuntura Macroeconômica")
+c_m1, c_m2 = st.columns([1, 2])
+c_m1.success(f"🎯 **Cenário Atual (Vigente)**\n\nSelic Atual: **{f_pct(selic_hoje)} a.a.**\n\nIPCA 12 meses: **{f_pct(ipca_12m_hoje)}**")
+c_m2.info(
+    f"🔮 **Projeções do Mercado (Focus)**\n\n"
+    f"**Selic:** {ano_atual}: **{f_pct(proj_focus.get(f'Selic_{ano_atual}', 0))}** |  {ano_atual+1}: **{f_pct(proj_focus.get(f'Selic_{ano_atual+1}', 0))}** |  {ano_atual+2}: **{f_pct(proj_focus.get(f'Selic_{ano_atual+2}', 0))}**\n\n"
+    f"**IPCA:** {ano_atual}: **{f_pct(proj_focus.get(f'IPCA_{ano_atual}', 0))}** |  {ano_atual+1}: **{f_pct(proj_focus.get(f'IPCA_{ano_atual+1}', 0))}** |  {ano_atual+2}: **{f_pct(proj_focus.get(f'IPCA_{ano_atual+2}', 0))}**"
+)
+st.write("---")
+
+# ==========================================
+# 7. CONTROLE DA CARTEIRA E CONEXÃO
 # ==========================================
 if not st.session_state.df_base.empty:
     st.markdown("### 2. Controle Operacional")
@@ -495,6 +540,9 @@ if not st.session_state.df_base.empty:
         st.session_state.df_simul = pd.DataFrame(lines_simul_iniciais)
         st.success("Sincronizado!")
 
+# ==========================================
+# 8. DASHBOARD E RELATÓRIOS
+# ==========================================
     if st.session_state.dados_mercado:
         linhas_perf = []
         for t, dm in st.session_state.dados_mercado.items():
@@ -528,6 +576,7 @@ if not st.session_state.df_base.empty:
 
         with t2:
             st.markdown("#### Métodos Certificados de Valuation")
+            
             st.markdown("""
             * **Preço Teto Decio Bazin:** Avalia se a empresa paga bons dividendos hoje. Ele calcula o preço máximo ideal para você comprar a ação e garantir um retorno mínimo em dinheiro todo ano. É igual a calcular o valor justo do aluguel de um imóvel.
             * **Preço Justo Benjamin Graham:** Avalia o valor real de fábrica da empresa com base no patrimônio que ela possui e no lucro que gera. Ele indica se o preço da ação na Bolsa está barato ou caro comparado ao tamanho físico e contábil dela. É igual a descobrir se um carro usado está abaixo da tabela FIPE. *Como FIIs funcionam por outra dinâmica imobiliária, este método não se aplica a eles.*
@@ -612,7 +661,7 @@ if not st.session_state.df_base.empty:
             
             for m in range(13):
                 if m == 0:
-                    linhas_proj.append({"Mês": f"Mês {m}", "Capital Inicial": saldo_inicial, "Aportes Acumulados": 0.0, "Juros/Divs Acumados": 0.0})
+                    linhas_proj.append({"Mês": f"Mês {m}", "Capital Inicial": saldo_inicial, "Aportes Acumulados": 0.0, "Juros/Divs Acumulados": 0.0})
                 else:
                     gc = saldo_dinamico * rent
                     div_m = base_div * ((1 + cresc_div) ** (m/12))
@@ -621,11 +670,11 @@ if not st.session_state.df_base.empty:
                     saldo_dinamico += (gc + div_m + aporte)
                     
                     linhas_proj.append({
-                        "Mês": f"Mês {m}", "Capital Inicial": saldo_inicial, "Aportes Acumulados": ac_ap, "Juros/Divs Acumados": ac_jd
+                        "Mês": f"Mês {m}", "Capital Inicial": saldo_inicial, "Aportes Acumulados": ac_ap, "Juros/Divs Acumulados": ac_jd
                     })
             
             df_proj_plot = pd.DataFrame(linhas_proj)
-            df_melt_proj = df_proj_plot.melt(id_vars=["Mês"], value_vars=["Capital Inicial", "Aportes Acumulados", "Juros/Divs Acumados"], var_name="Componente", value_name="Valor (R$)")
+            df_melt_proj = df_proj_plot.melt(id_vars=["Mês"], value_vars=["Capital Inicial", "Aportes Acumulados", "Juros/Divs Acumulados"], var_name="Componente", value_name="Valor (R$)")
             
             fig_proj = px.bar(df_melt_proj, x="Mês", y="Valor (R$)", color="Componente", title="Evolução Patrimonial Controlada (Alocação Separada)")
             st.plotly_chart(fig_proj, use_container_width=True)
@@ -777,13 +826,13 @@ if not st.session_state.df_base.empty:
                 
             if l_hist:
                 df_hist_total = pd.DataFrame(l_hist).sort_values("Data Ex", ascending=False)
-                c_heading1, c_heading2 = st.columns(2)
+                c_h1, c_h2 = st.columns(2)
                 ativos_hist_disp = sorted(df_hist_total['Ativo'].unique().tolist())
-                ativos_hist_sel = c_heading1.multiselect("Filtrar Histórico por Ativo:", options=ativos_hist_disp, default=ativos_hist_disp)
+                ativos_hist_sel = c_h1.multiselect("Filtrar Histórico por Ativo:", options=ativos_hist_disp, default=ativos_hist_disp)
                 
                 min_date_h = min(df_hist_total['Data Ex'])
                 max_date_h = max(df_hist_total['Data Ex'])
-                range_hist_sel = c_heading2.date_input("Filtrar Histórico por Período:", value=(min_date_h, max_date_h))
+                range_hist_sel = c_h2.date_input("Filtrar Histórico por Período:", value=(min_date_h, max_date_h))
                 
                 df_hist_filtrado = df_hist_total[df_hist_total['Ativo'].isin(ativos_hist_sel)]
                 if isinstance(range_hist_sel, tuple) and len(range_hist_sel) == 2:
