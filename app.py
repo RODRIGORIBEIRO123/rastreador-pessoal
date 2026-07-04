@@ -12,6 +12,12 @@ import os
 import sqlite3
 import hashlib
 
+try:
+    import docx
+    HAS_DOCX = True
+except ImportError:
+    HAS_DOCX = False
+
 # ==========================================
 # 1. CONFIGURAÇÃO E FORMATADORES
 # ==========================================
@@ -47,17 +53,31 @@ def to_excel(df, sheet_name='Sheet1'):
             worksheet.column_dimensions[col_letter].width = max(max_len + 4, 13)
     return output.getvalue()
 
+def export_docx(historico):
+    if not HAS_DOCX: return None
+    doc = docx.Document()
+    doc.add_heading('Histórico - Comitê de IA CNPI', 0)
+    for msg in historico:
+        role = "Analista:" if msg["role"] == "user" else "Gestora IA:"
+        doc.add_heading(role, level=2)
+        doc.add_paragraph(msg["content"])
+    bio = io.BytesIO()
+    doc.save(bio)
+    return bio.getvalue()
+
 MAPEAMENTO_TICKERS = {"GALG11": "GARE11", "SOMA3": "ALOS3", "ARZZ3": "ALOS3", "VVAR3": "BHIA3", "VIIA3": "BHIA3", "BRML3": "ALSO3", "BBRK11": "BRCR11", "HCTR11": "TRXD11", "TORD11": "TRXD11"}
 UNITS_ACOES = ['SANB11', 'TAEE11', 'KLBN11', 'BPAC11', 'ALUP11', 'ENGI11', 'BIDI11', 'CPLE11', 'SAPR11', 'RNEW11']
 
 if 'df_base' not in st.session_state: st.session_state.df_base = pd.DataFrame()
 if 'dados_mercado' not in st.session_state: st.session_state.dados_mercado = {}
 if 'df_simul' not in st.session_state: st.session_state.df_simul = pd.DataFrame()
+if 'df_tesouro' not in st.session_state: st.session_state.df_tesouro = pd.DataFrame()
 if 'logged_in' not in st.session_state: st.session_state.logged_in = False
 if 'username' not in st.session_state: st.session_state.username = ""
+if 'historico_chat' not in st.session_state: st.session_state.historico_chat = []
 
 # ==========================================
-# 2. MOTOR DE BANCO DE DADOS HÍBRIDO
+# 2. MOTOR DE BANCO DE DADOS HÍBRIDO (POSTGRESQL / SQLITE)
 # ==========================================
 IS_POSTGRES = "POSTGRES_URL" in st.secrets
 PARAM = "%s" if IS_POSTGRES else "?"
@@ -75,8 +95,12 @@ def init_db():
     c.execute('''CREATE TABLE IF NOT EXISTS usuarios (username TEXT PRIMARY KEY, password TEXT)''')
     if IS_POSTGRES:
         c.execute('''CREATE TABLE IF NOT EXISTS carteiras (username TEXT, ativo TEXT, quantidade DOUBLE PRECISION, preco_medio DOUBLE PRECISION, data_media TEXT)''')
+        c.execute('''CREATE TABLE IF NOT EXISTS tesouro (username TEXT, titulo TEXT, investido DOUBLE PRECISION, taxa DOUBLE PRECISION, vencimento INTEGER)''')
+        c.execute('''CREATE TABLE IF NOT EXISTS chat_ia (username TEXT, role TEXT, content TEXT)''')
     else:
         c.execute('''CREATE TABLE IF NOT EXISTS carteiras (username TEXT, Ativo TEXT, Quantidade REAL, Preco_Medio REAL, Data_Media TEXT)''')
+        c.execute('''CREATE TABLE IF NOT EXISTS tesouro (username TEXT, titulo TEXT, investido REAL, taxa REAL, vencimento INTEGER)''')
+        c.execute('''CREATE TABLE IF NOT EXISTS chat_ia (username TEXT, role TEXT, content TEXT)''')
     conn.commit()
     conn.close()
 
@@ -115,24 +139,47 @@ def atualizar_senha(username, nova_senha):
     conn.close()
     return True
 
-def salvar_carteira_db(username, df):
+def salvar_dados_usuario(username):
     conn = get_db_connection()
     c = conn.cursor()
+    
+    # Salva Carteira
     c.execute(f"DELETE FROM carteiras WHERE username={PARAM}", (username,))
-    if not df.empty:
-        for _, row in df.iterrows():
+    if not st.session_state.df_base.empty:
+        for _, row in st.session_state.df_base.iterrows():
             c.execute(f"INSERT INTO carteiras (username, Ativo, Quantidade, Preco_Medio, Data_Media) VALUES ({PARAM}, {PARAM}, {PARAM}, {PARAM}, {PARAM})",
                       (username, row['Ativo'], float(row['Quantidade']), float(row['Preço Médio']), str(row['Data Média'])))
+            
+    # Salva Tesouro
+    c.execute(f"DELETE FROM tesouro WHERE username={PARAM}", (username,))
+    if not st.session_state.df_tesouro.empty:
+        for _, row in st.session_state.df_tesouro.iterrows():
+            c.execute(f"INSERT INTO tesouro (username, titulo, investido, taxa, vencimento) VALUES ({PARAM}, {PARAM}, {PARAM}, {PARAM}, {PARAM})",
+                      (username, row['Título'], float(row['Investimento (R$)']), float(row['Taxa Anual (%)']), int(row['Ano Venc.'])))
+            
+    # Salva Chat IA
+    c.execute(f"DELETE FROM chat_ia WHERE username={PARAM}", (username,))
+    for msg in st.session_state.historico_chat[-30:]: # Guarda ultimas 30 mensagens
+        c.execute(f"INSERT INTO chat_ia (username, role, content) VALUES ({PARAM}, {PARAM}, {PARAM})", (username, msg['role'], msg['content']))
+        
     conn.commit()
     conn.close()
 
-def carregar_carteira_db(username):
+def carregar_dados_usuario(username):
     conn = get_db_connection()
-    query = f"SELECT Ativo, Quantidade, Preco_Medio as \"Preço Médio\", Data_Media as \"Data Média\" FROM carteiras WHERE username={PARAM}"
-    df = pd.read_sql_query(query, conn, params=(username,))
+    df_carteira = pd.read_sql_query(f"SELECT Ativo, Quantidade, Preco_Medio as \"Preço Médio\", Data_Media as \"Data Média\" FROM carteiras WHERE username={PARAM}", conn, params=(username,))
+    df_tesouro = pd.read_sql_query(f"SELECT titulo as \"Título\", investido as \"Investimento (R$)\", taxa as \"Taxa Anual (%)\", vencimento as \"Ano Venc.\" FROM tesouro WHERE username={PARAM}", conn, params=(username,))
+    df_chat = pd.read_sql_query(f"SELECT role, content FROM chat_ia WHERE username={PARAM}", conn, params=(username,))
     conn.close()
-    if not df.empty: df['Data Média'] = pd.to_datetime(df['Data Média']).dt.date
-    return df
+    
+    if not df_carteira.empty: df_carteira['Data Média'] = pd.to_datetime(df_carteira['Data Média']).dt.date
+    st.session_state.df_base = df_carteira
+    st.session_state.df_tesouro = df_tesouro
+    
+    if not df_chat.empty:
+        st.session_state.historico_chat = df_chat.to_dict('records')
+    else:
+        st.session_state.historico_chat = [{"role": "assistant", "content": f"Saudações, {username}. O terminal está mapeado em tempo real. Como posso ajudar com o mercado ou com sua carteira?"}]
 
 init_db()
 
@@ -154,7 +201,7 @@ if not st.session_state.logged_in:
                 if autenticar_usuario(login_user, login_pass):
                     st.session_state.logged_in = True
                     st.session_state.username = login_user
-                    st.session_state.df_base = carregar_carteira_db(login_user)
+                    carregar_dados_usuario(login_user)
                     st.rerun()
                 else: st.error("Credenciais inválidas.")
                 
@@ -181,7 +228,7 @@ if not st.session_state.logged_in:
     st.stop()
 
 # ==========================================
-# 4. APP PRINCIPAL: FUNÇÕES DE DADOS E IA
+# 4. APP PRINCIPAL: FUNÇÕES DE DADOS B3 E MACRO
 # ==========================================
 st.markdown(f"""
     <div style="text-align: center; margin-bottom: 20px;">
@@ -190,19 +237,6 @@ st.markdown(f"""
     </div>
 """, unsafe_allow_html=True)
 st.write("---")
-
-ARQUIVO_CHAT = f"historico_ia_{st.session_state.username}.json"
-MENSAGEM_INICIAL = [{"role": "assistant", "content": f"Saudações, {st.session_state.username}. O terminal está mapeado em tempo real. Como posso ajudar com a sua carteira ou com o mercado hoje?"}]
-
-if 'historico_chat' not in st.session_state:
-    if os.path.exists(ARQUIVO_CHAT):
-        try:
-            with open(ARQUIVO_CHAT, "r", encoding="utf-8") as f: st.session_state.historico_chat = json.load(f)
-        except: st.session_state.historico_chat = MENSAGEM_INICIAL.copy()
-    else: st.session_state.historico_chat = MENSAGEM_INICIAL.copy()
-
-def salvar_chat():
-    with open(ARQUIVO_CHAT, "w", encoding="utf-8") as f: json.dump(st.session_state.historico_chat, f, ensure_ascii=False, indent=4)
 
 @st.cache_data(ttl=86400)
 def carregar_macro():
@@ -354,8 +388,7 @@ def processar_planilha_b3(df):
             
         ticker = MAPEAMENTO_TICKERS.get(ticker_raw[:-1] if ticker_raw.endswith('F') and len(ticker_raw) > 4 else ticker_raw, ticker_raw[:-1] if ticker_raw.endswith('F') and len(ticker_raw) > 4 else ticker_raw)
         
-        if not re.match(r'^[A-Z]{4}\d{1,2}$', ticker):
-            continue
+        if not re.match(r'^[A-Z]{4}\d{1,2}$', ticker): continue
             
         if 'Tipo de Movimentação' in df.columns:
             mov_tipo_str = str(row['Tipo de Movimentação']).strip().upper()
@@ -397,7 +430,7 @@ def processar_planilha_b3(df):
     return consolidar_carteira(pd.DataFrame(ativos))
 
 # ==========================================
-# 5. SIDEBAR: UPLOAD, LOGIN E DB
+# 5. SIDEBAR: UPLOAD E DB
 # ==========================================
 st.sidebar.markdown(f"### 👤 ANALISTA OPERACIONAL")
 if st.sidebar.button("🚪 Sair", use_container_width=True):
@@ -408,10 +441,9 @@ if st.sidebar.button("🚪 Sair", use_container_width=True):
 
 st.sidebar.divider()
 st.sidebar.markdown("### 💾 Banco de Dados")
-if not st.session_state.df_base.empty:
-    if st.sidebar.button("Salvar Estado Atual no DB", type="primary", use_container_width=True):
-        salvar_carteira_db(st.session_state.username, st.session_state.df_base)
-        st.sidebar.success("Sincronizado!")
+if st.sidebar.button("Salvar Estado Atual no DB", type="primary", use_container_width=True):
+    salvar_dados_usuario(st.session_state.username)
+    st.sidebar.success("Sincronizado e Salvo!")
 
 st.sidebar.divider()
 st.sidebar.header("1. Upload de Arquivos")
@@ -419,7 +451,7 @@ arquivo_principal = st.sidebar.file_uploader("Substituir Base Completa", type=["
 arquivo_novo = st.sidebar.file_uploader("Apenas Novas Operações", type=["xlsx", "csv"])
 data_corte = st.sidebar.date_input("Filtrar a partir de:", pd.Timestamp.now().date() - pd.Timedelta(days=15)) if arquivo_novo else None
 
-if st.sidebar.button("🚀 Processar", use_container_width=True):
+if st.sidebar.button("🚀 Processar Excel B3", use_container_width=True):
     base_atual = st.session_state.df_base.copy()
     
     if arquivo_principal:
@@ -432,7 +464,6 @@ if st.sidebar.button("🚀 Processar", use_container_width=True):
             df_p = pd.read_excel(arquivo_principal)
         
         df_p = corrigir_cabecalho_b3(df_p)
-        
         if 'Data Média' in df_p.columns: base_atual = consolidar_carteira(df_p)
         elif 'Data do Negócio' in df_p.columns: base_atual = processar_planilha_b3(df_p)
         else:
@@ -449,7 +480,6 @@ if st.sidebar.button("🚀 Processar", use_container_width=True):
             df_n = pd.read_excel(arquivo_novo)
         
         df_n = corrigir_cabecalho_b3(df_n)
-        
         if not df_n.empty and 'Data do Negócio' in df_n.columns:
             df_n['Data do Negócio'] = pd.to_datetime(df_n['Data do Negócio'], dayfirst=True, errors='coerce')
             df_n = df_n[df_n['Data do Negócio'].dt.date >= data_corte]
@@ -461,7 +491,7 @@ if st.sidebar.button("🚀 Processar", use_container_width=True):
     st.rerun()
 
 # ==========================================
-# 6. PAINEL MACRO (SEMPRE VISÍVEL)
+# 6. PAINEL MACRO E CONTROLE MANUAL
 # ==========================================
 proj_focus, ano_atual = obter_projecoes_focus()
 selic_hoje, ipca_12m_hoje = obter_macro_atual()
@@ -469,95 +499,95 @@ selic_hoje, ipca_12m_hoje = obter_macro_atual()
 st.markdown("### 👑 Conjuntura Macroeconômica")
 c_m1, c_m2 = st.columns([1, 2])
 c_m1.success(f"🎯 **Cenário Atual (Vigente)**\n\nSelic Atual: **{f_pct(selic_hoje)} a.a.**\n\nIPCA 12 meses: **{f_pct(ipca_12m_hoje)}**")
-c_m2.info(
-    f"🔮 **Projeções do Mercado (Focus)**\n\n"
-    f"**Selic:** {ano_atual}: **{f_pct(proj_focus.get(f'Selic_{ano_atual}', 0))}** |  {ano_atual+1}: **{f_pct(proj_focus.get(f'Selic_{ano_atual+1}', 0))}** |  {ano_atual+2}: **{f_pct(proj_focus.get(f'Selic_{ano_atual+2}', 0))}**\n\n"
-    f"**IPCA:** {ano_atual}: **{f_pct(proj_focus.get(f'IPCA_{ano_atual}', 0))}** |  {ano_atual+1}: **{f_pct(proj_focus.get(f'IPCA_{ano_atual+1}', 0))}** |  {ano_atual+2}: **{f_pct(proj_focus.get(f'IPCA_{ano_atual+2}', 0))}**"
-)
+c_m2.info(f"🔮 **Projeções do Mercado (Focus)**\n\n**Selic:** {ano_atual}: **{f_pct(proj_focus.get(f'Selic_{ano_atual}', 0))}** |  {ano_atual+1}: **{f_pct(proj_focus.get(f'Selic_{ano_atual+1}', 0))}** |  {ano_atual+2}: **{f_pct(proj_focus.get(f'Selic_{ano_atual+2}', 0))}**\n\n**IPCA:** {ano_atual}: **{f_pct(proj_focus.get(f'IPCA_{ano_atual}', 0))}** |  {ano_atual+1}: **{f_pct(proj_focus.get(f'IPCA_{ano_atual+1}', 0))}** |  {ano_atual+2}: **{f_pct(proj_focus.get(f'IPCA_{ano_atual+2}', 0))}**")
+st.write("---")
+
+st.markdown("### 2. Controle Operacional Manual")
+ca, cb, cc = st.columns([1, 1, 1])
+with ca:
+    tdel = st.selectbox("Excluir Ativo:", [""] + sorted(st.session_state.df_base["Ativo"].tolist()) if not st.session_state.df_base.empty else [""])
+    if st.button("Remover", use_container_width=True) and tdel:
+        st.session_state.df_base = st.session_state.df_base[st.session_state.df_base["Ativo"] != tdel]
+        st.rerun()
+with cb:
+    nt = st.text_input("Nova Compra (Ticker)")
+    cq, cp = st.columns(2)
+    nq = cq.number_input("Qtd", min_value=1)
+    np_v = cp.number_input("PM (R$)", min_value=0.01)
+    if st.button("Adicionar à Carteira", use_container_width=True) and nt:
+        nl = pd.DataFrame([{"Ativo": nt.upper(), "Quantidade": float(nq), "Preço Médio": float(np_v), "Data Média": pd.Timestamp.now().date()}])
+        st.session_state.df_base = consolidar_carteira(pd.concat([st.session_state.df_base, nl], ignore_index=True))
+        st.rerun()
+with cc:
+    st.info("Insira ativos manualmente se não quiser usar a planilha da B3. Todas as abas são acessíveis livremente.")
+    if st.button("🚀 Conectar ao Mercado Vivo", type="primary", use_container_width=True):
+        if not st.session_state.df_base.empty:
+            st.session_state.df_base = consolidar_carteira(st.session_state.df_base) 
+            df_macro, fundamentos_br = carregar_macro(), obter_fundamentos_brasil()
+            progresso, total = st.progress(0), len(st.session_state.df_base)
+            dados_mercado, lines_simul_iniciais = {}, []
+
+            for i, row in st.session_state.df_base.iterrows():
+                ticker, data_compra = str(row['Ativo']).strip().upper(), pd.to_datetime(row['Data Média']) if pd.notna(row['Data Média']) else pd.Timestamp.now()
+                preco_atual, divs_total, divs_12m, lpa, vpa, setor = float(row['Preço Médio']), 0.0, 0.0, 0.0, 0.0, "Desconhecido"
+                tipo_ativo = "FII" if ticker.endswith('11') and ticker not in UNITS_ACOES else "Ação"
+                
+                try:
+                    acao = yf.Ticker(f"{ticker}.SA")
+                    try: 
+                        hist = acao.history(period="1d")
+                        if not hist.empty: preco_atual = float(hist['Close'].iloc[-1])
+                    except: pass
+                    try: 
+                        divs = acao.dividends
+                        if not divs.empty:
+                            if divs.index.tz is not None: divs.index = divs.index.tz_localize(None)
+                            divs_total = float(divs[divs.index >= data_compra].sum() * row['Quantidade'])
+                            divs_12m = float(divs[divs.index >= (pd.Timestamp.now() - pd.DateOffset(years=1))].sum())
+                    except: pass
+                    try: setor = traduzir_setor(acao.info.get('industry', ''))
+                    except: pass
+                except: pass
+
+                if ticker in fundamentos_br: vpa, lpa = fundamentos_br[ticker]['vpa'], fundamentos_br[ticker]['lpa']
+                cdi, ipca = calcular_macro_acumulado(df_macro, data_compra)
+                
+                dados_mercado[ticker] = {"Qtd": float(row['Quantidade']), "PM": float(row['Preço Médio']), "Data": data_compra, "Preço Atual": preco_atual, "Div_Total": divs_total, "CDI": cdi, "IPCA": ipca, "Setor": setor, "Tipo": tipo_ativo}
+                lines_simul_iniciais.append({"Ativo": ticker, "Cotação Atual": preco_atual, "VPA (Contábil)": vpa, "LPA Projetado": lpa, "Div. Projetado (R$)": divs_12m})
+                progresso.progress((i + 1) / total)
+                
+            st.session_state.dados_mercado = dados_mercado
+            st.session_state.df_simul = pd.DataFrame(lines_simul_iniciais)
+            st.success("Sincronizado!")
+        else:
+            st.warning("Adicione ativos na carteira primeiro.")
+
 st.write("---")
 
 # ==========================================
-# 7. CONTROLE DA CARTEIRA E CONEXÃO
+# 7. DASHBOARD E RELATÓRIOS (TABS INDEPENDENTES)
 # ==========================================
-if not st.session_state.df_base.empty:
-    st.markdown("### 2. Controle Operacional")
-    ca, cb, cc = st.columns([1, 1, 1])
-    with ca:
-        tdel = st.selectbox("Excluir Ativo:", [""] + sorted(st.session_state.df_base["Ativo"].tolist()))
-        if st.button("Remover") and tdel:
-            st.session_state.df_base = st.session_state.df_base[st.session_state.df_base["Ativo"] != tdel]
-            st.rerun()
-    with cb:
-        nt = st.text_input("Nova Compra (Ticker)")
-        cq, cp = st.columns(2)
-        nq = cq.number_input("Qtd", min_value=1)
-        np_v = cp.number_input("PM (R$)", min_value=0.01)
-        if st.button("Adicionar") and nt:
-            nl = pd.DataFrame([{"Ativo": nt.upper(), "Quantidade": float(nq), "Preço Médio": float(np_v), "Data Média": pd.Timestamp.now().date()}])
-            st.session_state.df_base = consolidar_carteira(pd.concat([st.session_state.df_base, nl], ignore_index=True))
-            st.rerun()
-    with cc:
-        st.download_button("📥 Baixar Carteira Atual (CSV)", data=st.session_state.df_base.to_csv(index=False, sep=';', encoding='utf-8-sig'), file_name="Carteira_Backup.csv", use_container_width=True)
+t1, t2, t3, t4, t5, t_tesouro, t6 = st.tabs(["📊 Visão Geral", "💰 Valuation", "🎯 Radar & Projeção", "📈 Gráficos", "💸 Proventos B3", "🏛️ Tesouro Direto", "💬 Gestora IA (CNPI)"])
 
-    df_editado = st.data_editor(st.session_state.df_base, use_container_width=True, hide_index=True)
+if st.session_state.dados_mercado:
+    linhas_perf = []
+    for t, dm in st.session_state.dados_mercado.items():
+        investido, saldo = dm['Qtd'] * dm['PM'], dm['Qtd'] * dm['Preço Atual']
+        linhas_perf.append({
+            "Ativo": t, "Tipo": dm["Tipo"], "Setor": dm["Setor"], "Qtd": int(dm['Qtd']), 
+            "Preço Médio": dm['PM'], "Preço Atual": dm['Preço Atual'],
+            "Total Investido": investido, "Saldo Atual": saldo, 
+            "Saldo C/ Dividendos": saldo + dm['Div_Total'],
+            "Resultado (R$)": saldo - investido,
+            "Resultado C/ Dividendos": (saldo - investido) + dm['Div_Total'],
+            "Data Média": dm['Data'].strftime('%d/%m/%Y'), "Total Div. (R$)": dm['Div_Total'], 
+            "DY on Cost (%)": (dm['Div_Total'] / investido)*100 if investido>0 else 0, 
+            "Evolução c/ Div (%)": (((saldo + dm['Div_Total']) / investido)-1)*100 if investido>0 else 0,
+            "IPCA Acum. (%)": dm['IPCA'], "CDI Acum. (%)": dm['CDI']
+        })
+    df_perf_final = pd.DataFrame(linhas_perf)
 
-    if st.button("🚀 Conectar ao Mercado Vivo", type="primary"):
-        st.session_state.df_base = consolidar_carteira(df_editado) 
-        df_macro, fundamentos_br = carregar_macro(), obter_fundamentos_brasil()
-        progresso, total = st.progress(0), len(st.session_state.df_base)
-        dados_mercado, lines_simul_iniciais = {}, []
-
-        for i, row in st.session_state.df_base.iterrows():
-            ticker, data_compra = str(row['Ativo']).strip().upper(), pd.to_datetime(row['Data Média']) if pd.notna(row['Data Média']) else pd.Timestamp.now()
-            preco_atual, divs_total, divs_12m, lpa, vpa, setor = float(row['Preço Médio']), 0.0, 0.0, 0.0, 0.0, "Desconhecido"
-            tipo_ativo = "FII" if ticker.endswith('11') and ticker not in UNITS_ACOES else "Ação"
-            
-            try:
-                acao = yf.Ticker(f"{ticker}.SA")
-                try: 
-                    hist = acao.history(period="1d")
-                    if not hist.empty: preco_atual = float(hist['Close'].iloc[-1])
-                except: pass
-                try: 
-                    divs = acao.dividends
-                    if not divs.empty:
-                        if divs.index.tz is not None: divs.index = divs.index.tz_localize(None)
-                        divs_total = float(divs[divs.index >= data_compra].sum() * row['Quantidade'])
-                        divs_12m = float(divs[divs.index >= (pd.Timestamp.now() - pd.DateOffset(years=1))].sum())
-                except: pass
-                try: setor = traduzir_setor(acao.info.get('industry', ''))
-                except: pass
-            except: pass
-
-            if ticker in fundamentos_br: vpa, lpa = fundamentos_br[ticker]['vpa'], fundamentos_br[ticker]['lpa']
-            cdi, ipca = calcular_macro_acumulado(df_macro, data_compra)
-            
-            dados_mercado[ticker] = {"Qtd": float(row['Quantidade']), "PM": float(row['Preço Médio']), "Data": data_compra, "Preço Atual": preco_atual, "Div_Total": divs_total, "CDI": cdi, "IPCA": ipca, "Setor": setor, "Tipo": tipo_ativo}
-            lines_simul_iniciais.append({"Ativo": ticker, "Cotação Atual": preco_atual, "VPA (Contábil)": vpa, "LPA Projetado": lpa, "Div. Projetado (R$)": divs_12m})
-            progresso.progress((i + 1) / total)
-            
-        st.session_state.dados_mercado = dados_mercado
-        st.session_state.df_simul = pd.DataFrame(lines_simul_iniciais)
-        st.success("Sincronizado!")
-
-# ==========================================
-# 8. DASHBOARD E RELATÓRIOS
-# ==========================================
-    if st.session_state.dados_mercado:
-        linhas_perf = []
-        for t, dm in st.session_state.dados_mercado.items():
-            investido, saldo = dm['Qtd'] * dm['PM'], dm['Qtd'] * dm['Preço Atual']
-            linhas_perf.append({
-                "Ativo": t, "Tipo": dm["Tipo"], "Setor": dm["Setor"], "Qtd": int(dm['Qtd']), 
-                "Preço Médio": dm['PM'], "Preço Atual": dm['Preço Atual'],
-                "Total Investido": investido, "Saldo Atual": saldo, "Resultado (R$)": saldo - investido,
-                "Data Média": dm['Data'].strftime('%d/%m/%Y'), "Total Div. (R$)": dm['Div_Total'], 
-                "DY on Cost (%)": (dm['Div_Total'] / investido)*100 if investido>0 else 0, 
-                "Evolução c/ Div (%)": (((saldo + dm['Div_Total']) / investido)-1)*100 if investido>0 else 0,
-                "IPCA Acum. (%)": dm['IPCA'], "CDI Acum. (%)": dm['CDI']
-            })
-        df_perf_final = pd.DataFrame(linhas_perf)
-
+    with t1:
         st.markdown("### 🏆 Visão Global")
         df_acoes, df_fiis = df_perf_final[df_perf_final['Tipo'] == 'Ação'], df_perf_final[df_perf_final['Tipo'] == 'FII']
         ev_acoes = (df_acoes['Saldo Atual'].sum() / df_acoes['Total Investido'].sum() - 1)*100 if df_acoes['Total Investido'].sum()>0 else 0
@@ -569,357 +599,226 @@ if not st.session_state.df_base.empty:
         m3.metric("💸 Renda Ações", f_brl(df_acoes['Total Div. (R$)'].sum()))
         m4.metric("💸 Renda FIIs", f_brl(df_fiis['Total Div. (R$)'].sum()))
 
-        t1, t2, t3, t4, t5, t6 = st.tabs(["📊 Visão Geral", "💰 Valuation", "🎯 Radar & Projeção", "📈 Gráficos", "💸 Proventos", "💬 IA"])
+        st.dataframe(df_perf_final.drop(columns=['Tipo', 'Setor']).style.format({c: f_brl for c in ["Preço Médio", "Preço Atual", "Total Investido", "Saldo Atual", "Saldo C/ Dividendos", "Resultado (R$)", "Resultado C/ Dividendos", "Total Div. (R$)"]}|{c: f_pct for c in ["DY on Cost (%)", "Evolução c/ Div (%)", "IPCA Acum. (%)", "CDI Acum. (%)"]}), use_container_width=True, hide_index=True)
+
+    with t2:
+        st.markdown("#### Métodos Certificados de Valuation")
+        st.markdown("""
+        * **Preço Teto Decio Bazin:** Avalia se a empresa paga bons dividendos hoje. Calcula o preço máximo ideal de compra para garantir um retorno mínimo.
+        * **Preço Justo Benjamin Graham:** Avalia o valor real de fábrica da empresa. Indica se o preço da ação está barato ou caro na bolsa. *(Não se aplica a FIIs).*
+        """)
+        yd = st.number_input("Taxa de Retorno Mínima Exigida Bazin (%):", value=6.0, step=0.5) / 100.0
         
-        with t1:
-            st.dataframe(df_perf_final.drop(columns=['Tipo', 'Setor']).style.format({c: f_brl for c in ["Preço Médio", "Preço Atual", "Total Investido", "Saldo Atual", "Resultado (R$)", "Total Div. (R$)"]}|{c: f_pct for c in ["DY on Cost (%)", "Evolução c/ Div (%)", "IPCA Acum. (%)", "CDI Acum. (%)"]}), use_container_width=True, hide_index=True)
-
-        with t2:
-            st.markdown("#### Métodos Certificados de Valuation")
+        df_edit_v = st.data_editor(st.session_state.df_simul[["Ativo", "Cotação Atual", "Div. Projetado (R$)", "VPA (Contábil)", "LPA Projetado"]], use_container_width=True, hide_index=True, disabled=["Ativo", "Cotação Atual"])
+        st.session_state.df_simul[["Div. Projetado (R$)", "VPA (Contábil)", "LPA Projetado"]] = df_edit_v[["Div. Projetado (R$)", "VPA (Contábil)", "LPA Projetado"]]
+        
+        recs_val = []
+        for _, r in df_edit_v.iterrows():
+            t_ticker = str(r['Ativo']).strip().upper()
+            is_fii = t_ticker.endswith('11') and t_ticker not in UNITS_ACOES
+            bz = (float(r["Div. Projetado (R$)"]) / yd) if float(r["Div. Projetado (R$)"]) > 0 else 0.0
+            mbz = ((bz / float(r["Cotação Atual"])) - 1) * 100 if bz > 0 else 0.0
             
-            st.markdown("""
-            * **Preço Teto Decio Bazin:** Avalia se a empresa paga bons dividendos hoje. Ele calcula o preço máximo ideal para você comprar a ação e garantir um retorno mínimo em dinheiro todo ano. É igual a calcular o valor justo do aluguel de um imóvel.
-            * **Preço Justo Benjamin Graham:** Avalia o valor real de fábrica da empresa com base no patrimônio que ela possui e no lucro que gera. Ele indica se o preço da ação na Bolsa está barato ou caro comparado ao tamanho físico e contábil dela. É igual a descobrir se um carro usado está abaixo da tabela FIPE. *Como FIIs funcionam por outra dinâmica imobiliária, este método não se aplica a eles.*
-            """)
-            yd = st.number_input("Taxa de Retorno Mínima Exigida Bazin (%):", value=6.0, step=0.5, help="O percentual mínimo de dividendos que você deseja receber em dinheiro vivo todo ano.") / 100.0
-            
-            df_edit_v = st.data_editor(st.session_state.df_simul[["Ativo", "Cotação Atual", "Div. Projetado (R$)", "VPA (Contábil)", "LPA Projetado"]], use_container_width=True, hide_index=True, disabled=["Ativo", "Cotação Atual"])
-            st.session_state.df_simul[["Div. Projetado (R$)", "VPA (Contábil)", "LPA Projetado"]] = df_edit_v[["Div. Projetado (R$)", "VPA (Contábil)", "LPA Projetado"]]
-            
-            recs_val = []
-            for _, r in df_edit_v.iterrows():
-                t_ticker = str(r['Ativo']).strip().upper()
-                is_fii = t_ticker.endswith('11') and t_ticker not in UNITS_ACOES
-                
-                bz = (float(r["Div. Projetado (R$)"]) / yd) if float(r["Div. Projetado (R$)"]) > 0 else 0.0
-                mbz = ((bz / float(r["Cotação Atual"])) - 1) * 100 if bz > 0 else 0.0
-                
-                if not is_fii:
-                    gh = (22.5 * float(r["LPA Projetado"]) * float(r["VPA (Contábil)"]))**0.5 if float(r["LPA Projetado"]) > 0 and float(r["VPA (Contábil)"]) > 0 else 0.0
-                    mgh = ((gh / float(r["Cotação Atual"])) - 1) * 100 if gh > 0 else 0.0
-                else:
-                    gh = np.nan
-                    mgh = np.nan
-                    
-                recs_val.append({"Ativo": t_ticker, "Teto Bazin": bz, "Margem Bazin (%)": mbz, "Justo Graham": gh, "Margem Graham (%)": mgh})
-                
-            st.session_state.df_recs_val = pd.DataFrame(recs_val)
-            st.dataframe(st.session_state.df_recs_val.style.format({
-                "Teto Bazin": lambda x: f_brl(x) if x > 0 else "-",
-                "Justo Graham": lambda x: f_brl(x) if pd.notna(x) and x > 0 else "-",
-                "Margem Bazin (%)": lambda x: f_pct(x) if x != 0 else "-",
-                "Margem Graham (%)": lambda x: f_pct(x) if pd.notna(x) and x != 0 else "-"
-            }), use_container_width=True, hide_index=True)
-
-        with t3: 
-            st.markdown("##### Parametrização do Radar Operacional")
-            c_p1, c_p2, c_p3, c_p4 = st.columns(4)
-            patr_fora = c_p1.number_input("Patrimônio Externo (R$):", value=0.0, step=1000.0, help="Capital fora de custódia pronto para aporte.")
-            aporte = c_p2.number_input("Aporte Mensal Previsto (R$):", value=2000.0, step=500.0, help="Valor líquido direcionado a novos investimentos mensais.")
-            rent = c_p3.number_input("Rentabilidade Mensal Alvo (%):", value=0.8, step=0.1) / 100.0
-            cresc_div = c_p4.number_input("Crescimento Anual de Dividendos (%):", value=5.0, step=1.0) / 100.0
-
-            st.markdown("##### 🎯 Triagem Estratégica Corporativa")
-            c_m1, c_m2 = st.columns(2)
-            mb_ex = c_m1.number_input("Margem Mínima Bazin Exigida (%):", value=5.0, help="Gera sinal de COMPRA se a margem de desconto da ação perante o Preço Teto de Bazin for maior que este valor.")
-            mg_ex = c_m2.number_input("Margem Mínima Graham Exigida (%):", value=15.0, help="Gera sinal de COMPRA se a margem de desconto da ação perante o Preço Contábil de Graham for maior que este valor. Ignorado em FIIs.")
-            
-            df_radar = pd.merge(df_perf_final[['Ativo', 'Tipo', 'Preço Atual']], st.session_state.df_recs_val, on='Ativo')
-            
-            status_bazin = []
-            status_graham = []
-            
-            for _, row in df_radar.iterrows():
-                if row['Teto Bazin'] > 0:
-                    status_bazin.append("COMPRA 🟢" if row['Margem Bazin (%)'] >= mb_ex else ("MANTER 🟡" if row['Margem Bazin (%)'] >= -5 else "VENDA 🔴"))
-                else:
-                    status_bazin.append("MANTER 🟡")
-                    
-                if row['Tipo'] == 'Ação' and pd.notna(row['Justo Graham']) and row['Justo Graham'] > 0:
-                    status_graham.append("COMPRA 🟢" if row['Margem Graham (%)'] >= mg_ex else ("MANTER 🟡" if row['Margem Graham (%)'] >= 0 else "VENDA 🔴"))
-                else:
-                    status_graham.append("-")
-                    
-            df_radar['Status Bazin'] = status_bazin
-            df_radar['Status Graham'] = status_graham
-            
-            df_radar_exib = df_radar[['Ativo', 'Tipo', 'Preço Atual', 'Teto Bazin', 'Margem Bazin (%)', 'Status Bazin', 'Justo Graham', 'Margem Graham (%)', 'Status Graham']]
-            st.dataframe(df_radar_exib.style.format({
-                "Preço Atual": f_brl,
-                "Teto Bazin": lambda x: f_brl(x) if x > 0 else "-",
-                "Justo Graham": lambda x: f_brl(x) if pd.notna(x) and x > 0 else "-",
-                "Margem Bazin (%)": lambda x: f_pct(x) if x != 0 else "-",
-                "Margem Graham (%)": lambda x: f_pct(x) if pd.notna(x) and x != 0 else "-"
-            }), use_container_width=True, hide_index=True)
-
-            st.markdown("##### ❄️ Projeção Bola de Neve (1 Ano)")
-            saldo_inicial = df_perf_final['Saldo Atual'].sum() + patr_fora
-            base_div = st.session_state.df_simul['Div. Projetado (R$)'].sum() / 12 if not st.session_state.df_simul.empty else 0.0
-            
-            ac_ap, ac_jd, linhas_proj = 0.0, 0.0, []
-            saldo_dinamico = saldo_inicial
-            
-            for m in range(13):
-                if m == 0:
-                    linhas_proj.append({"Mês": f"Mês {m}", "Capital Inicial": saldo_inicial, "Aportes Acumulados": 0.0, "Juros/Divs Acumulados": 0.0})
-                else:
-                    gc = saldo_dinamico * rent
-                    div_m = base_div * ((1 + cresc_div) ** (m/12))
-                    ac_jd += (gc + div_m)
-                    ac_ap += aporte
-                    saldo_dinamico += (gc + div_m + aporte)
-                    
-                    linhas_proj.append({
-                        "Mês": f"Mês {m}", "Capital Inicial": saldo_inicial, "Aportes Acumulados": ac_ap, "Juros/Divs Acumulados": ac_jd
-                    })
-            
-            df_proj_plot = pd.DataFrame(linhas_proj)
-            df_melt_proj = df_proj_plot.melt(id_vars=["Mês"], value_vars=["Capital Inicial", "Aportes Acumulados", "Juros/Divs Acumulados"], var_name="Componente", value_name="Valor (R$)")
-            
-            fig_proj = px.bar(df_melt_proj, x="Mês", y="Valor (R$)", color="Componente", title="Evolução Patrimonial Controlada (Alocação Separada)")
-            st.plotly_chart(fig_proj, use_container_width=True)
-
-        with t4:
-            st.markdown("#### Gráficos de Distribuição Patrimonial")
-            c_g1, c_g2 = st.columns(2)
-            c_g1.plotly_chart(px.pie(df_perf_final, values='Saldo Atual', names='Ativo', title="Por Ativo"), use_container_width=True)
-            c_g2.plotly_chart(px.pie(df_perf_final, values='Saldo Atual', names='Setor', title="Por Setor"), use_container_width=True)
-            
-            st.markdown("---")
-            st.markdown("#### 📊 Gráfico Dinâmico Comparativo Histórico (Barras)")
-            
-            ativos_disponiveis = sorted(df_perf_final['Ativo'].unique().tolist())
-            
-            c_f_g1, c_f_g2 = st.columns(2)
-            ativos_sel = c_f_g1.multiselect("Selecione os Ativos para o gráfico:", options=ativos_disponiveis, default=ativos_disponiveis[:5] if len(ativos_disponiveis) >= 5 else ativos_disponiveis)
-            indexadores_sel = c_f_g2.multiselect("Selecione os Indexadores para Comparação:", ['CDI', 'IPCA'], default=['CDI', 'IPCA'])
-            
-            janela_temporal = st.radio("Período de Leitura do Gráfico:", ["Desde a Data de Compra (Automático)", "Definir Período Customizado (Manual)"], horizontal=True)
-            
-            if janela_temporal == "Desde a Data de Compra (Automático)":
-                st.info("Neste modo, o CDI e o IPCA são calculados individualmente para cada ativo, considerando exatamente o tempo de posse na carteira.")
-                if ativos_sel:
-                    df_comp = df_perf_final[df_perf_final['Ativo'].isin(ativos_sel)][['Ativo', 'Evolução c/ Div (%)', 'CDI Acum. (%)', 'IPCA Acum. (%)']].copy()
-                    df_comp = df_comp.rename(columns={'Evolução c/ Div (%)': 'Carteira (c/ Div)', 'CDI Acum. (%)': 'CDI', 'IPCA Acum. (%)': 'IPCA'})
-                    
-                    colunas_manter = ['Ativo', 'Carteira (c/ Div)'] + [ind for ind in indexadores_sel]
-                    df_comp = df_comp[colunas_manter]
-                    df_melt = df_comp.melt(id_vars='Ativo', var_name='Indicador', value_name='Rentabilidade (%)')
-                    
-                    fig_comp = px.bar(
-                        df_melt, x='Ativo', y='Rentabilidade (%)', color='Indicador', barmode='group',
-                        color_discrete_map={'Carteira (c/ Div)': '#1f77b4', 'CDI': '#ff7f0e', 'IPCA': '#2ca02c'},
-                        title="Rentabilidade Acumulada por Ativo vs Indexadores (Real Time na Carteira)"
-                    )
-                    st.plotly_chart(fig_comp, use_container_width=True)
-                else:
-                    st.warning("Selecione ao menos um ativo para visualizar o gráfico.")
+            if not is_fii:
+                gh = (22.5 * float(r["LPA Projetado"]) * float(r["VPA (Contábil)"]))**0.5 if float(r["LPA Projetado"]) > 0 and float(r["VPA (Contábil)"]) > 0 else 0.0
+                mgh = ((gh / float(r["Cotação Atual"])) - 1) * 100 if gh > 0 else 0.0
             else:
-                c_dt1, c_dt2 = st.columns(2)
-                dt_inicial = c_dt1.date_input("De:", pd.Timestamp.now().date() - pd.Timedelta(days=365))
-                dt_final = c_dt2.date_input("Até:", pd.Timestamp.now().date())
-                
-                if st.button("Gerar Gráfico Comparativo", use_container_width=True):
-                    if ativos_sel:
-                        with st.spinner("Buscando cotações e calculando indexadores históricos..."):
-                            df_macro = carregar_macro()
-                            cdi_m, ipca_m = 0.0, 0.0
-                            if not df_macro.empty:
-                                try:
-                                    filtro_macro = df_macro.loc[dt_inicial:dt_final]
-                                    cdi_m = ((1 + filtro_macro['CDI'].dropna()).prod() - 1) * 100
-                                    ipca_m = ((1 + filtro_macro['IPCA'].dropna()).prod() - 1) * 100
-                                except: pass
-                                
-                            linhas_m_res = []
-                            for t in ativos_sel:
-                                r_ativo = 0.0
-                                try:
-                                    h_ticker = yf.Ticker(f"{t}.SA").history(start=dt_inicial, end=dt_final)
-                                    if not h_ticker.empty and len(h_ticker) >= 2:
-                                        p_ini = h_ticker['Close'].iloc[0]
-                                        p_fim = h_ticker['Close'].iloc[-1]
-                                        d_periodo = 0.0
-                                        try:
-                                            all_divs = yf.Ticker(f"{t}.SA").dividends
-                                            if not all_divs.empty:
-                                                if all_divs.index.tz is not None: all_divs.index = all_divs.index.tz_localize(None)
-                                                d_periodo = all_divs[(all_divs.index >= pd.Timestamp(dt_inicial)) & (all_divs.index <= pd.Timestamp(dt_final))].sum()
-                                        except: pass
-                                        r_ativo = ((p_fim + d_periodo) / p_ini - 1) * 100
-                                except: pass
-                                
-                                item_m = {'Ativo': t, 'Carteira (c/ Div)': r_ativo}
-                                if 'CDI' in indexadores_sel: item_m['CDI'] = cdi_m
-                                if 'IPCA' in indexadores_sel: item_m['IPCA'] = ipca_m
-                                linhas_m_res.append(item_m)
-                                
-                            df_m_plot = pd.DataFrame(linhas_m_res)
-                            if not df_m_plot.empty:
-                                df_melt_m = df_m_plot.melt(id_vars='Ativo', var_name='Indicador', value_name='Rentabilidade (%)')
-                                fig_comp_m = px.bar(
-                                    df_melt_m, x='Ativo', y='Rentabilidade (%)', color='Indicador', barmode='group',
-                                    color_discrete_map={'Carteira (c/ Div)': '#1f77b4', 'CDI': '#ff7f0e', 'IPCA': '#2ca02c'},
-                                    title=f"Desempenho de {dt_inicial.strftime('%d/%m/%Y')} até {dt_final.strftime('%d/%m/%Y')}"
-                                )
-                                st.plotly_chart(fig_comp_m, use_container_width=True)
+                gh = np.nan
+                mgh = np.nan
+            recs_val.append({"Ativo": t_ticker, "Teto Bazin": bz, "Margem Bazin (%)": mbz, "Justo Graham": gh, "Margem Graham (%)": mgh})
+            
+        st.session_state.df_recs_val = pd.DataFrame(recs_val)
+        st.dataframe(st.session_state.df_recs_val.style.format({"Teto Bazin": lambda x: f_brl(x) if x > 0 else "-", "Justo Graham": lambda x: f_brl(x) if pd.notna(x) and x > 0 else "-", "Margem Bazin (%)": lambda x: f_pct(x) if x != 0 else "-", "Margem Graham (%)": lambda x: f_pct(x) if pd.notna(x) and x != 0 else "-"}), use_container_width=True, hide_index=True)
+
+    with t3: 
+        st.markdown("##### Parametrização do Radar Operacional")
+        c_p1, c_p2, c_p3, c_p4 = st.columns(4)
+        patr_fora = c_p1.number_input("Patrimônio Externo (R$):", value=0.0, step=1000.0)
+        aporte = c_p2.number_input("Aporte Mensal (R$):", value=2000.0, step=500.0)
+        rent = c_p3.number_input("Rentabilidade Mensal Alvo (%):", value=0.8, step=0.1) / 100.0
+        cresc_div = c_p4.number_input("Cresc. Anual Dividendos (%):", value=5.0, step=1.0) / 100.0
+
+        st.markdown("##### 🎯 Triagem Estratégica e Teoria das Margens")
+        st.info("**Por que olhar a Margem de Segurança?**\n\n**Graham (>15% a 20%):** Protege seu patrimônio contra erros contábeis e flutuações bruscas. Você compra o ativo com 'desconto de fábrica'.\n\n**Bazin (>0% a 5%):** Garante que, mesmo que a cotação congele, o dinheiro vivo em dividendos será no mínimo o que você exigiu.")
+        
+        c_m1, c_m2 = st.columns(2)
+        mb_ex = c_m1.number_input("Margem Mínima Bazin Exigida (%):", value=5.0)
+        mg_ex = c_m2.number_input("Margem Mínima Graham Exigida (%):", value=15.0)
+        
+        # Radar recálculo dinâmico baseado no input atual
+        df_radar = pd.merge(df_perf_final[['Ativo', 'Tipo', 'Preço Atual']], st.session_state.df_recs_val, on='Ativo')
+        
+        df_radar['Status Bazin'] = df_radar.apply(lambda r: "COMPRA 🟢" if r['Teto Bazin']>0 and r['Margem Bazin (%)'] >= mb_ex else ("MANTER 🟡" if r['Teto Bazin']>0 and r['Margem Bazin (%)'] >= -5 else "VENDA 🔴"), axis=1)
+        df_radar['Status Graham'] = df_radar.apply(lambda r: "COMPRA 🟢" if r['Tipo']=='Ação' and pd.notna(r['Justo Graham']) and r['Margem Graham (%)'] >= mg_ex else ("MANTER 🟡" if r['Tipo']=='Ação' and pd.notna(r['Justo Graham']) and r['Margem Graham (%)'] >= 0 else ("VENDA 🔴" if r['Tipo']=='Ação' else "-")), axis=1)
+        
+        st.dataframe(df_radar[['Ativo', 'Tipo', 'Preço Atual', 'Teto Bazin', 'Margem Bazin (%)', 'Status Bazin', 'Justo Graham', 'Margem Graham (%)', 'Status Graham']].style.format({"Preço Atual": f_brl, "Teto Bazin": lambda x: f_brl(x) if x > 0 else "-", "Justo Graham": lambda x: f_brl(x) if pd.notna(x) and x > 0 else "-", "Margem Bazin (%)": lambda x: f_pct(x) if x != 0 else "-", "Margem Graham (%)": lambda x: f_pct(x) if pd.notna(x) and x != 0 else "-"}), use_container_width=True, hide_index=True)
+
+        st.markdown("##### ❄️ Projeção Bola de Neve (1 Ano)")
+        saldo_inicial = df_perf_final['Saldo Atual'].sum() + patr_fora
+        base_div = st.session_state.df_simul['Div. Projetado (R$)'].sum() / 12 if not st.session_state.df_simul.empty else 0.0
+        
+        ac_ap, ac_jd, linhas_proj = 0.0, 0.0, []
+        saldo_dinamico = saldo_inicial
+        
+        for m in range(13):
+            if m > 0:
+                gc = saldo_dinamico * rent
+                div_m = base_div * ((1 + cresc_div) ** (m/12))
+                ac_jd += (gc + div_m)
+                ac_ap += aporte
+                saldo_dinamico += (gc + div_m + aporte)
+            linhas_proj.append({"Mês": f"Mês {m}", "Capital Inicial": saldo_inicial, "Aportes Acumulados": ac_ap, "Juros/Divs Acumulados": ac_jd})
+        
+        df_melt_proj = pd.DataFrame(linhas_proj).melt(id_vars=["Mês"], value_vars=["Capital Inicial", "Aportes Acumulados", "Juros/Divs Acumulados"], var_name="Componente", value_name="Valor (R$)")
+        fig_proj = px.bar(df_melt_proj, x="Mês", y="Valor (R$)", color="Componente", title="Evolução Patrimonial Controlada", color_discrete_sequence=['#1f4e78', '#00a896', '#f4a261'])
+        st.plotly_chart(fig_proj, use_container_width=True)
+
+    with t4:
+        st.markdown("#### Gráficos de Distribuição Patrimonial")
+        c_g1, c_g2 = st.columns(2)
+        cores_modernas = ['#003f5c', '#2f4b7c', '#665191', '#a05195', '#d45087', '#f95d6a', '#ff7c43', '#ffa600']
+        cores_tipo = ['#1f4e78', '#00a896']
+        c_g1.plotly_chart(px.pie(df_perf_final, values='Saldo Atual', names='Ativo', title="Por Ativo", color_discrete_sequence=cores_modernas), use_container_width=True)
+        c_g2.plotly_chart(px.pie(df_perf_final, values='Saldo Atual', names='Tipo', title="Por Classe (FII vs Ação)", color_discrete_sequence=cores_tipo), use_container_width=True)
+        
+        st.markdown("---")
+        st.markdown("#### 📊 Gráfico Dinâmico Comparativo Histórico")
+        ativos_disponiveis = sorted(df_perf_final['Ativo'].unique().tolist())
+        c_f_g1, c_f_g2 = st.columns(2)
+        ativos_sel = c_f_g1.multiselect("Selecione Ativos:", options=ativos_disponiveis, default=ativos_disponiveis[:5] if len(ativos_disponiveis)>=5 else ativos_disponiveis)
+        indexadores_sel = c_f_g2.multiselect("Indexadores:", ['CDI', 'IPCA'], default=['CDI', 'IPCA'])
+        
+        if ativos_sel:
+            df_comp = df_perf_final[df_perf_final['Ativo'].isin(ativos_sel)][['Ativo', 'Evolução c/ Div (%)', 'CDI Acum. (%)', 'IPCA Acum. (%)']].rename(columns={'Evolução c/ Div (%)': 'Carteira (c/ Div)', 'CDI Acum. (%)': 'CDI', 'IPCA Acum. (%)': 'IPCA'})
+            col_manter = ['Ativo', 'Carteira (c/ Div)'] + [ind for ind in indexadores_sel]
+            df_melt = df_comp[col_manter].melt(id_vars='Ativo', var_name='Indicador', value_name='Rentabilidade (%)')
+            fig_comp = px.bar(df_melt, x='Ativo', y='Rentabilidade (%)', color='Indicador', barmode='group', color_discrete_map={'Carteira (c/ Div)': '#003f5c', 'CDI': '#00a896', 'IPCA': '#f4a261'}, title="Rentabilidade Tempo de Posse")
+            st.plotly_chart(fig_comp, use_container_width=True)
+
+    with t5:
+        st.markdown("### 💸 Proventos Mensais e Status de Pagamento")
+        c_f1, c_f2, c_btn = st.columns([2, 2, 2])
+        meses_map = {1:"Janeiro",2:"Fevereiro",3:"Março",4:"Abril",5:"Maio",6:"Junho",7:"Julho",8:"Agosto",9:"Setembro",10:"Outubro",11:"Novembro",12:"Dezembro"}
+        m_hoje, a_hoje = pd.Timestamp.now().month, pd.Timestamp.now().year
+        m_sel = c_f1.selectbox("Mês:", options=list(meses_map.keys()), format_func=lambda x: meses_map[x], index=m_hoje-1)
+        a_sel = c_f2.selectbox("Ano:", options=[a_hoje, a_hoje-1, a_hoje-2])
+        
+        if c_btn.button("🔄 Processar Proventos", use_container_width=True):
+            with st.spinner("Lendo histórico B3..."):
+                la, lf = [], []
+                for t_tk, dm in st.session_state.dados_mercado.items():
+                    val = 0.0
+                    try:
+                        divs = yf.Ticker(f"{t_tk}.SA").dividends
+                        if not divs.empty:
+                            if divs.index.tz is not None: divs.index = divs.index.tz_localize(None)
+                            val = float(divs[(divs.index.month == m_sel) & (divs.index.year == a_sel)].sum())
+                    except: pass
+                    
+                    rec = val * dm['Qtd']
+                    yoc = (rec / (dm['Qtd'] * dm['PM'])) * 100 if dm['PM']>0 else 0
+                    
+                    if dm['Tipo'] == 'FII':
+                        lf.append({"FII": t_tk, "Unitário (R$)": val, "Recebido (R$)": rec, "Yield on Cost (%)": yoc, "Status": "Divulgado / Pago 🟢" if val>0 else "Aguardando 🟡"})
                     else:
-                        st.warning("Selecione ao menos um ativo para visualizar o gráfico.")
+                        if val > 0: la.append({"Ação": t_tk, "Unitário (R$)": val, "Recebido (R$)": rec, "Yield on Cost (%)": yoc, "Status": "Pago 🟢"})
+                
+                st.session_state.divs_acoes = pd.DataFrame(la)
+                st.session_state.divs_fiis = pd.DataFrame(lf)
+                st.session_state.divs_m = m_sel
+        
+        if 'divs_fiis' in st.session_state and not st.session_state.divs_fiis.empty:
+            st.markdown("#### 🏢 Status dos Fundos Imobiliários (FIIs)")
+            st.dataframe(st.session_state.divs_fiis.style.format({"Unitário (R$)": f_brl_4, "Recebido (R$)": f_brl, "Yield on Cost (%)": f_pct}), use_container_width=True, hide_index=True)
+            
+        if 'divs_acoes' in st.session_state and not st.session_state.divs_acoes.empty:
+            st.markdown("#### 📈 Ações Pagadoras")
+            st.dataframe(st.session_state.divs_acoes.style.format({"Unitário (R$)": f_brl_4, "Recebido (R$)": f_brl, "Yield on Cost (%)": f_pct}), use_container_width=True, hide_index=True)
 
-        with t5:
-            st.markdown("### 💸 Proventos Mensais")
-            c_f1, c_f2, c_btn = st.columns([2, 2, 2])
-            meses_map = {1:"Janeiro",2:"Fevereiro",3:"Março",4:"Abril",5:"Maio",6:"Junho",7:"Julho",8:"Agosto",9:"Setembro",10:"Outubro",11:"Novembro",12:"Dezembro"}
-            m_hoje, a_hoje = pd.Timestamp.now().month, pd.Timestamp.now().year
-            
-            m_sel = c_f1.selectbox("Mês:", options=list(meses_map.keys()), format_func=lambda x: meses_map[x], index=m_hoje-1)
-            a_sel = c_f2.selectbox("Ano:", options=[a_hoje, a_hoje-1, a_hoje-2])
-            
-            if 'divs_df' not in st.session_state: st.session_state.divs_df = None
-            
-            if c_btn.button("🔄 Processar Proventos", use_container_width=True) or st.session_state.divs_df is None:
-                with st.spinner("Lendo histórico B3..."):
-                    l_div = []
-                    for t, dm in st.session_state.dados_mercado.items():
-                        try:
-                            divs = yf.Ticker(f"{t}.SA").dividends
-                            if not divs.empty:
-                                if divs.index.tz is not None: divs.index = divs.index.tz_localize(None)
-                                dm_val = divs[(divs.index.month == m_sel) & (divs.index.year == a_sel)].sum()
-                                if dm_val > 0:
-                                    yoc = ((dm_val * dm['Qtd']) / (dm['Qtd'] * dm['PM'])) * 100 if dm['PM']>0 else 0
-                                    dy = (dm_val / dm['Preço Atual']) * 100 if dm['Preço Atual']>0 else 0
-                                    l_div.append({"Ativo": t, "Unitário (R$)": float(dm_val), "Qtd": int(dm['Qtd']), "Recebido (R$)": float(dm_val * dm['Qtd']), "Yield on Cost (%)": float(yoc), "DY Atual (%)": float(dy)})
-                        except: pass
-                    st.session_state.divs_df = pd.DataFrame(l_div)
-                    st.session_state.divs_m, st.session_state.divs_a = m_sel, a_sel
-            
-            df_d = st.session_state.divs_df
-            if df_d is not None and not df_d.empty:
-                st.dataframe(df_d.style.format({"Unitário (R$)": f_brl_4, "Recebido (R$)": f_brl, "Yield on Cost (%)": f_pct, "DY Atual (%)": f_pct}), use_container_width=True, hide_index=True)
-                st.success(f"**Total {meses_map[st.session_state.divs_m]}/{st.session_state.divs_a}:** {f_brl(df_d['Recebido (R$)'].sum())}")
-                
-                xls = to_excel(df_d, sheet_name=f"Proventos_{meses_map[st.session_state.divs_m]}")
-                st.download_button(label="📥 Baixar Relatório de Proventos Mensal (Excel)", data=xls, file_name=f"Proventos_{st.session_state.username}_{meses_map[st.session_state.divs_m]}_{st.session_state.divs_a}.xlsx", mime="application/vnd.ms-excel", use_container_width=True)
-            elif df_d is not None: st.info("Sem proventos no período selecionado.")
+else:
+    for t in [t1, t2, t3, t4, t5]:
+        with t: st.info("ℹ️ Para ativar as visões gráficas e proventos, adicione ativos ao lado e clique em **Conectar ao Mercado Vivo**.")
 
-            st.markdown("---")
-            st.markdown("### 🏛️ Histórico Analítico de Proventos (Desde o Início)")
-            
-            l_hist = []
-            for t, dm in st.session_state.dados_mercado.items():
-                try:
-                    divs = yf.Ticker(f"{t}.SA").dividends
-                    if not divs.empty:
-                        if divs.index.tz is not None: divs.index = divs.index.tz_localize(None)
-                        divs_filtrados = divs[divs.index >= pd.Timestamp(dm['Data'])]
-                        for d_idx, val in divs_filtrados.items():
-                            tot_rec = val * dm['Qtd']
-                            investido = dm['Qtd'] * dm['PM']
-                            yoc = (tot_rec / investido) * 100 if investido > 0 else 0
-                            dy = (val / dm['Preço Atual']) * 100 if dm['Preço Atual'] > 0 else 0
-                            l_hist.append({
-                                "Data Ex": d_idx.date(), "Ativo": t, "Unitário (R$)": float(val), "Quantidade": int(dm['Qtd']),
-                                "Recebido (R$)": float(tot_rec), "Yield on Cost (%)": float(yoc), "DY Atual (%)": float(dy)
-                            })
-                except: pass
-                
-            if l_hist:
-                df_hist_total = pd.DataFrame(l_hist).sort_values("Data Ex", ascending=False)
-                c_h1, c_h2 = st.columns(2)
-                ativos_hist_disp = sorted(df_hist_total['Ativo'].unique().tolist())
-                ativos_hist_sel = c_h1.multiselect("Filtrar Histórico por Ativo:", options=ativos_hist_disp, default=ativos_hist_disp)
-                
-                min_date_h = min(df_hist_total['Data Ex'])
-                max_date_h = max(df_hist_total['Data Ex'])
-                range_hist_sel = c_h2.date_input("Filtrar Histórico por Período:", value=(min_date_h, max_date_h))
-                
-                df_hist_filtrado = df_hist_total[df_hist_total['Ativo'].isin(ativos_hist_sel)]
-                if isinstance(range_hist_sel, tuple) and len(range_hist_sel) == 2:
-                    df_hist_filtrado = df_hist_filtrado[(df_hist_filtrado['Data Ex'] >= range_hist_sel[0]) & (df_hist_filtrado['Data Ex'] <= range_hist_sel[1])]
-                    
-                if not df_hist_filtrado.empty:
-                    st.dataframe(df_hist_filtrado.style.format({"Unitário (R$)": f_brl_4, "Recebido (R$)": f_brl, "Yield on Cost (%)": f_pct, "DY Atual (%)": f_pct}), use_container_width=True, hide_index=True)
-                    st.success(f"**Soma de Proventos Históricos Filtrados:** {f_brl(df_hist_filtrado['Recebido (R$)'].sum())}")
-                    
-                    xls_hist = to_excel(df_hist_filtrado, sheet_name="Historico_Proventos")
-                    st.download_button(label="📥 Baixar Histórico de Proventos Filtrado (Excel)", data=xls_hist, file_name=f"Historico_Proventos_{st.session_state.username}.xlsx", mime="application/vnd.ms-excel", use_container_width=True)
-                else:
-                    st.info("Nenhum provento localizado para os filtros informados.")
-            else:
-                st.info("Sincronize com o Mercado Vivo para levantar a base histórica completa de dividendos.")
+# ==========================================
+# 8. ABAS INDEPENDENTES (SEMPRE ATIVAS)
+# ==========================================
+with t_tesouro:
+    st.markdown("### 🏛️ Simulador e Controle de Tesouro Direto")
+    st.info("Insira manualmente seus títulos de renda fixa abaixo. O sistema projetará o efeito composto até a data de vencimento de cada um.")
+    
+    if st.session_state.df_tesouro.empty:
+        st.session_state.df_tesouro = pd.DataFrame([{"Título": "Tesouro IPCA+ 2029", "Investimento (R$)": 1000.0, "Taxa Anual (%)": 6.0, "Ano Venc.": 2029}])
+        
+    df_t = st.data_editor(st.session_state.df_tesouro, num_rows="dynamic", use_container_width=True, hide_index=True)
+    st.session_state.df_tesouro = df_t
+    
+    if st.button("Projetar Títulos até Vencimento"):
+        res_t = []
+        for _, rt in df_t.iterrows():
+            anos = max(1, int(rt['Ano Venc.']) - pd.Timestamp.now().year)
+            v_final = float(rt['Investimento (R$)']) * ((1 + (float(rt['Taxa Anual (%)'])/100)) ** anos)
+            res_t.append({"Título": rt['Título'], "Anos P/ Vencer": anos, "Investido": float(rt['Investimento (R$)']), "Valor Bruto no Vencimento": v_final, "Lucro Bruto Projetado": v_final - float(rt['Investimento (R$)'])})
+        st.dataframe(pd.DataFrame(res_t).style.format({"Investido": f_brl, "Valor Bruto no Vencimento": f_brl, "Lucro Bruto Projetado": f_brl}), use_container_width=True, hide_index=True)
 
-        # ==========================================
-        # 9. COMITÊ DE IA (CHAT SEGURO & PERMANENTE)
-        # ==========================================
-        with t6:
-            st.markdown("### 💬 Comitê de IA - Análise CNPI Avançada")
-            
-            if st.button("🗑️ Limpar Histórico do Chat", use_container_width=True):
-                st.session_state.historico_chat = MENSAGEM_INICIAL.copy()
-                if os.path.exists(ARQUIVO_CHAT): os.remove(ARQUIVO_CHAT)
-                st.rerun()
+with t6:
+    st.markdown("### 💬 Comitê de IA - Análise CNPI Avançada")
+    c_btn1, c_btn2 = st.columns([1, 1])
+    
+    if c_btn1.button("🗑️ Limpar Histórico de Chat", use_container_width=True):
+        st.session_state.historico_chat = [{"role": "assistant", "content": f"Saudações, {st.session_state.username}. O terminal foi reiniciado."}]
+        st.rerun()
+        
+    if HAS_DOCX and len(st.session_state.historico_chat) > 1:
+        c_btn2.download_button("📄 Exportar Conversa (Word)", data=export_docx(st.session_state.historico_chat), file_name=f"Relatorio_IA_{st.session_state.username}.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", use_container_width=True)
+    elif not HAS_DOCX:
+        c_btn2.caption("⚠️ Adicione 'python-docx' no requirements.txt para habilitar o download em Word.")
 
-            try: api_key = st.secrets.get("GEMINI_API_KEY", "")
-            except: api_key = ""
+    try: api_key = st.secrets.get("GEMINI_API_KEY", "")
+    except: api_key = ""
+        
+    if not api_key:
+        api_key = st.text_input("Insira sua Gemini API Key para ativar a Gestora IA:", type="password")
+        
+    for msg in st.session_state.historico_chat:
+        with st.chat_message(msg["role"]): st.write(msg["content"])
+        
+    if prompt := st.chat_input("Ex: 'A ação BBAS3 está barata?' ou 'Avalie minha carteira'"):
+        with st.chat_message("user"): st.write(prompt)
+        st.session_state.historico_chat.append({"role": "user", "content": prompt})
+        
+        with st.chat_message("assistant"):
+            with st.spinner("O Comitê de IA está processando..."):
+                ctx_c = str(st.session_state.dados_mercado) if st.session_state.dados_mercado else "O usuário NÃO tem dados de carteira cadastrados no momento."
+                ctx_m = f"Selic Vigente: {f_pct(selic_hoje)}|IPCA: {f_pct(ipca_12m_hoje)}. Focus {ano_atual}: Sel {f_pct(proj_focus.get(f'Selic_{ano_atual}'))}/IPCA {f_pct(proj_focus.get(f'IPCA_{ano_atual}'))}"
+                historico_texto = "\n".join([f"{'Usuário' if m['role']=='user' else 'Gestora IA'}: {m['content']}" for m in st.session_state.historico_chat[-6:-1]])
                 
-            if not api_key:
-                api_key = st.text_input("Insira sua Gemini API Key para ativar a IA:", type="password")
+                sys_prompt = (
+                    f"Você é um Analista Sênior CNPI de alta performance. [Dados da Carteira]: {ctx_c}. [Macro]: {ctx_m}.\n"
+                    f"REGRA ESTRITA DE ESCOPO:\n"
+                    f"1) Se o usuário usar explicitamente palavras como 'minha carteira', 'meus ativos' ou perguntar de ativos que ele possui nos [Dados da Carteira], VOCÊ DEVE analisar o portfólio dele.\n"
+                    f"2) Se o usuário NÃO citar a própria carteira e fizer uma pergunta genérica de mercado, IGNORE TOTALMENTE a carteira dele e responda de forma neutra e generalista.\n\n"
+                    f"=== HISTÓRICO RECENTE (Para manter continuidade) ===\n{historico_texto}"
+                )
                 
-            for msg in st.session_state.historico_chat:
-                with st.chat_message(msg["role"]): st.write(msg["content"])
-                
-            if prompt := st.chat_input("Pergunte à Gestora IA...", key="ia_chat_input_unique"):
-                with st.chat_message("user"): st.write(prompt)
-                st.session_state.historico_chat.append({"role": "user", "content": prompt})
-                salvar_chat()
-                
-                with st.chat_message("assistant"):
-                    with st.spinner("O Comitê de IA está processando sua solicitação..."):
-                        if 'df_perf_final' in locals() or 'df_perf_final' in globals():
-                            ctx_c = df_perf_final[['Ativo', 'Qtd', 'Preço Médio', 'Preço Atual', 'Evolução c/ Div (%)']].to_csv(index=False)
-                        else:
-                            ctx_c = "Nenhum dado ativo de mercado vivo conectado no momento."
-                            
-                        ctx_m = f"Selic: {f_pct(selic_hoje)}|IPCA: {f_pct(ipca_12m_hoje)}. Focus {ano_atual}: Sel {f_pct(proj_focus.get(f'Selic_{ano_atual}'))}/IPCA {f_pct(proj_focus.get(f'IPCA_{ano_atual}'))}"
-                        
-                        historico_texto = "\n".join([f"{'Usuário' if m['role']=='user' else 'Gestora IA'}: {m['content']}" for m in st.session_state.historico_chat[-11:-1]])
-                        
-                        sys_prompt = (
-                            f"Você é um renomado Analista Sênior CNPI. [Dados da Carteira]: {ctx_c}. [Macro]: {ctx_m}. "
-                            f"Forneça respostas executivas, objetivas e profundas, cruzando valuations de Graham/Bazin e "
-                            f"emitindo pareceres claros e acionáveis de alocação. "
-                            f"REGRA ESTRITA DE CONTEXTO: "
-                            f"1) Se o usuário CITAR a palavra 'carteira' ou os ativos específicos que possui, analise os [Dados da Carteira]. "
-                            f"2) Se o usuário NÃO citar a carteira, forneça recomendações e análises diretas de mercado (ações, FIIs, etc) "
-                            f"ignorando totalmente os ativos que ele já possui.\n\n"
-                            f"=== CONTEXTO DA CONVERSA ATUAL ===\n{historico_texto}"
-                        )
-                        
-                        resposta = "⚠️ Chave API ausente ou não configurada."
-                        if api_key:
+                resposta = "⚠️ Chave API ausente ou não configurada."
+                if api_key:
+                    try:
+                        import google.generativeai as genai
+                        genai.configure(api_key=api_key)
+                        resp_ok, ultimo_erro = False, ""
+                        for m in ['gemini-2.5-flash', 'gemini-1.5-flash']:
                             try:
-                                import google.generativeai as genai
-                                genai.configure(api_key=api_key)
-                                resp_ok = False
-                                ultimo_erro = ""
-                                
-                                for m in ['gemini-2.5-flash', 'gemini-1.5-flash']:
-                                    try:
-                                        resposta = genai.GenerativeModel(m).generate_content([sys_prompt, prompt]).text
-                                        resp_ok = True
-                                        break 
-                                    except Exception as err:
-                                        ultimo_erro = str(err)
-                                        continue
-                                        
-                                if not resp_ok:
-                                    resposta = f"⚠️ Falha de comunicação com os servidores da IA. Log técnico: {ultimo_erro}"
-                            except Exception as e:
-                                resposta = f"⚠️ Erro estrutural ao inicializar o modelo: {e}"
-                        
-                        st.write(resposta)
-                        
-                st.session_state.historico_chat.append({"role": "assistant", "content": resposta})
-                salvar_chat()
-                st.rerun()
+                                resposta = genai.GenerativeModel(m).generate_content([sys_prompt, prompt]).text
+                                resp_ok = True
+                                break 
+                            except Exception as err:
+                                ultimo_erro = str(err)
+                                continue
+                        if not resp_ok: resposta = f"⚠️ Falha de comunicação com IA. Erro: {ultimo_erro}"
+                    except Exception as e: resposta = f"⚠️ Erro estrutural: {e}"
+                
+                st.write(resposta)
+                
+        st.session_state.historico_chat.append({"role": "assistant", "content": resposta})
+        salvar_dados_usuario(st.session_state.username) # Salva histórico no DB logo após a resposta
+        st.rerun()
