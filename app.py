@@ -856,7 +856,7 @@ if st.session_state.dados_mercado:
         st.dataframe(df_radar[['Ativo', 'Tipo', 'Preço Atual', 'Teto Bazin', 'Margem Bazin (%)', 'Status Bazin', 'Justo Graham', 'Margem Graham (%)', 'Status Graham']].style.format(formatacao_t2 | {"Preço Atual": f_brl}), use_container_width=True, hide_index=True)
 
         st.markdown("##### ❄️ Projeção Bola de Neve (1 Ano)")
-        saldo_dinamico = df_pf['Saldo Atual'].sum() + patr_fora
+        saldo_dinamico = df_perf_final['Saldo Atual'].sum() + patr_fora
         b_div = st.session_state.df_simul['Div. Projetado (R$)'].sum() / 12 if not st.session_state.df_simul.empty else 0.0
         
         ac_ap = 0.0
@@ -872,7 +872,7 @@ if st.session_state.dados_mercado:
                 ac_jd += (gc + div_m)
                 ac_ap += aporte
                 saldo_dinamico += (gc + div_m + aporte)
-                lp.append({"Mês": f"Mês {m}", "Capital Inicial": df_pf['Saldo Atual'].sum() + patr_fora, "Aportes Acumulados": ac_ap, "Juros/Divs Acumulados": ac_jd})
+                lp.append({"Mês": f"Mês {m}", "Capital Inicial": df_perf_final['Saldo Atual'].sum() + patr_fora, "Aportes Acumulados": ac_ap, "Juros/Divs Acumulados": ac_jd})
                 
         df_proj_plot = pd.DataFrame(lp)
         df_melt_proj = df_proj_plot.melt(id_vars=["Mês"], value_vars=["Capital Inicial", "Aportes Acumulados", "Juros/Divs Acumulados"], var_name="Componente", value_name="Valor (R$)")
@@ -882,18 +882,20 @@ if st.session_state.dados_mercado:
 
     with t4:
         st.markdown("#### Gráficos de Distribuição Patrimonial")
-        cg1, cg2 = st.columns(2)
+        c_g1, c_g2 = st.columns(2)
         
         # Paleta Institucional Moderna
         paleta = ['#003f5c', '#2f4b7c', '#665191', '#a05195', '#d45087', '#f95d6a', '#ff7c43', '#ffa600']
         
-        cg1.plotly_chart(px.pie(df_pf, values='Saldo Atual', names='Ativo', title="Por Ativo", color_discrete_sequence=paleta), use_container_width=True)
-        cg2.plotly_chart(px.pie(df_pf, values='Saldo Atual', names='Tipo', title="Por Classe Operacional", color_discrete_sequence=['#1f4e78', '#00a896']), use_container_width=True)
+        # Ajustado df_perf_final aqui:
+        c_g1.plotly_chart(px.pie(df_perf_final, values='Saldo Atual', names='Ativo', title="Por Ativo", color_discrete_sequence=paleta), use_container_width=True)
+        c_g2.plotly_chart(px.pie(df_perf_final, values='Saldo Atual', names='Tipo', title="Por Classe Operacional", color_discrete_sequence=['#1f4e78', '#00a896']), use_container_width=True)
         
         st.markdown("---")
         st.markdown("#### 📊 Comparativo Histórico e Indexadores")
         
-        ativos_disponiveis = sorted(df_pf['Ativo'].unique().tolist())
+        # Ajustado df_perf_final aqui:
+        ativos_disponiveis = sorted(df_perf_final['Ativo'].unique().tolist())
         c_f_g1, c_f_g2 = st.columns(2)
         atv_sel = c_f_g1.multiselect("Comparar Ativos Específicos:", options=ativos_disponiveis, default=ativos_disponiveis[:5] if len(ativos_disponiveis) >= 5 else ativos_disponiveis)
         ind_sel = c_f_g2.multiselect("Comparar com os Indexadores:", ['CDI', 'IPCA'], default=['CDI', 'IPCA'])
@@ -902,7 +904,8 @@ if st.session_state.dados_mercado:
         
         if janela == "Desde a Data de Compra (Automático)":
             if atv_sel:
-                df_comp = df_pf[df_pf['Ativo'].isin(atv_sel)][['Ativo', 'Evolução c/ Div (%)', 'CDI Acum. (%)', 'IPCA Acum. (%)']].rename(columns={'Evolução c/ Div (%)': 'Carteira (c/ Div)', 'CDI Acum. (%)': 'CDI', 'IPCA Acum. (%)': 'IPCA'})
+                # Ajustado df_perf_final aqui:
+                df_comp = df_perf_final[df_perf_final['Ativo'].isin(atv_sel)][['Ativo', 'Evolução c/ Div (%)', 'CDI Acum. (%)', 'IPCA Acum. (%)']].rename(columns={'Evolução c/ Div (%)': 'Carteira (c/ Div)', 'CDI Acum. (%)': 'CDI', 'IPCA Acum. (%)': 'IPCA'})
                 df_melt = df_comp[['Ativo', 'Carteira (c/ Div)'] + ind_sel].melt(id_vars='Ativo', var_name='Indicador', value_name='Rentabilidade (%)')
                 fig_comp = px.bar(df_melt, x='Ativo', y='Rentabilidade (%)', color='Indicador', barmode='group', color_discrete_map={'Carteira (c/ Div)': '#003f5c', 'CDI': '#00a896', 'IPCA': '#f4a261'}, title="Rentabilidade Acumulada no Tempo Real de Posse")
                 st.plotly_chart(fig_comp, use_container_width=True)
