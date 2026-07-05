@@ -1031,7 +1031,7 @@ if st.session_state.dados_mercado:
                 else:
                     st.warning("Selecione ao menos um ativo para visualizar o gráfico.")
 
-       with tab_prov:
+      with tab_prov:
         st.markdown("### 💸 Proventos Mensais e Status de Pagamento B3")
         cf1, cf2, c_btn = st.columns([2, 2, 2])
         m_map = {1:"Janeiro", 2:"Fevereiro", 3:"Março", 4:"Abril", 5:"Maio", 6:"Junho", 7:"Julho", 8:"Agosto", 9:"Setembro", 10:"Outubro", 11:"Novembro", 12:"Dezembro"}
@@ -1140,6 +1140,11 @@ if st.session_state.dados_mercado:
                 
                 xls_buffer = to_excel(df_hist_f, sheet_name="Historico_Proventos")
                 st.download_button(label="📥 Baixar Histórico de Proventos em Planilha (Excel)", data=xls_buffer, file_name=f"Historico_Proventos_{st.session_state.username}.xlsx", mime="application/vnd.ms-excel", use_container_width=True)
+
+else:
+    for tb in [tab_visao, tab_val, tab_radar, tab_graf, tab_prov]:
+        with tb: 
+            st.info("ℹ️ Adicione ativos na tabela de Controle Manual ou via upload de planilha na barra lateral. Depois, clique em **Conectar ao Mercado Vivo** para preencher essas abas.")
 # ==========================================
 # 8. ABAS ISOLADAS (SEMPRE ATIVAS)
 # ==========================================
