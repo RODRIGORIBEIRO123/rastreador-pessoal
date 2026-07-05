@@ -1031,7 +1031,7 @@ if st.session_state.dados_mercado:
                 else:
                     st.warning("Selecione ao menos um ativo para visualizar o gráfico.")
 
-    with tab_prov:
+       with tab_prov:
         st.markdown("### 💸 Proventos Mensais e Status de Pagamento B3")
         cf1, cf2, c_btn = st.columns([2, 2, 2])
         m_map = {1:"Janeiro", 2:"Fevereiro", 3:"Março", 4:"Abril", 5:"Maio", 6:"Junho", 7:"Julho", 8:"Agosto", 9:"Setembro", 10:"Outubro", 11:"Novembro", 12:"Dezembro"}
