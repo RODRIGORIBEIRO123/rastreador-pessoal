@@ -142,59 +142,18 @@ def init_db():
     conn = get_db_connection()
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS usuarios (username TEXT PRIMARY KEY, password TEXT)''')
-    
     if IS_POSTGRES:
         c.execute('''CREATE TABLE IF NOT EXISTS carteiras (username TEXT, ativo TEXT, quantidade DOUBLE PRECISION, preco_medio DOUBLE PRECISION, data_media TEXT)''')
         c.execute('''CREATE TABLE IF NOT EXISTS tesouro_v2 (username TEXT, titulo TEXT, data_compra TEXT, tipo_taxa TEXT, investido DOUBLE PRECISION, taxa DOUBLE PRECISION, vencimento INTEGER)''')
     else:
         c.execute('''CREATE TABLE IF NOT EXISTS carteiras (username TEXT, Ativo TEXT, Quantidade REAL, Preco_Medio REAL, Data_Media TEXT)''')
         c.execute('''CREATE TABLE IF NOT EXISTS tesouro_v2 (username TEXT, titulo TEXT, data_compra TEXT, tipo_taxa TEXT, investido REAL, taxa REAL, vencimento INTEGER)''')
-        
     c.execute('''CREATE TABLE IF NOT EXISTS chat_ia (username TEXT, role TEXT, content TEXT)''')
     conn.commit()
     conn.close()
 
-def hash_password(password): 
-    return hashlib.sha256(password.encode()).hexdigest()
-
-def registrar_usuario(username, password):
-    conn = get_db_connection()
-    c = conn.cursor()
-    try:
-        c.execute(f"INSERT INTO usuarios (username, password) VALUES ({PARAM}, {PARAM})", (username.strip(), hash_password(password)))
-        conn.commit()
-        conn.close()
-        return True
-    except:
-        conn.close()
-        return False
-
-def autenticar_usuario(username, password):
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute(f"SELECT * FROM usuarios WHERE username={PARAM} AND password={PARAM}", (username.strip(), hash_password(password)))
-    user = c.fetchone()
-    conn.close()
-    return user is not None
-
-def atualizar_senha(username, nova_senha):
-    usr = username.strip()
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute(f"SELECT * FROM usuarios WHERE username={PARAM}", (usr,))
-    user = c.fetchone()
-    if user is None:
-        conn.close()
-        return False
-        
-    c.execute(f"UPDATE usuarios SET password={PARAM} WHERE username={PARAM}", (hash_password(nova_senha), usr))
-    conn.commit()
-    conn.close()
-    return True
-
 def salvar_dados_completos_db(username):
-    conn = get_db_connection()
-    c = conn.cursor()
+    conn = get_db_connection(); c = conn.cursor()
     usr = username.strip()
     
     # Salvar Carteira B3
@@ -208,8 +167,7 @@ def salvar_dados_completos_db(username):
     c.execute(f"DELETE FROM tesouro_v2 WHERE username={PARAM}", (usr,))
     if isinstance(st.session_state.df_tesouro, pd.DataFrame) and not st.session_state.df_tesouro.empty:
         for _, r in st.session_state.df_tesouro.iterrows():
-            if pd.isna(r.get('Título')) or str(r.get('Título')).strip() == '': 
-                continue
+            if pd.isna(r.get('Título')) or str(r.get('Título')).strip() == '': continue
             c.execute(f"INSERT INTO tesouro_v2 (username, titulo, data_compra, tipo_taxa, investido, taxa, vencimento) VALUES ({PARAM}, {PARAM}, {PARAM}, {PARAM}, {PARAM}, {PARAM}, {PARAM})",
                       (usr, str(r.get('Título', 'Tesouro')), str(r.get('Data Compra', '')), str(r.get('Tipo Taxa', 'Pré-fixado')), float(limpar_numero(r.get('Valor Investido (R$)', 0))), float(limpar_numero(r.get('Taxa Contratada (%)', 0))), int(limpar_numero(r.get('Ano Vencimento', 2030)))))
             
@@ -217,41 +175,31 @@ def salvar_dados_completos_db(username):
     c.execute(f"DELETE FROM chat_ia WHERE username={PARAM}", (usr,))
     for msg in st.session_state.historico_chat[-30:]:
         c.execute(f"INSERT INTO chat_ia (username, role, content) VALUES ({PARAM}, {PARAM}, {PARAM})", (usr, msg['role'], msg['content']))
-        
-    conn.commit()
-    conn.close()
+    conn.commit(); conn.close()
 
 def carregar_dados_completos_db(username):
-    conn = get_db_connection()
-    c = conn.cursor()
+    conn = get_db_connection(); c = conn.cursor()
     usr = username.strip()
     
     c.execute(f"SELECT ativo, quantidade, preco_medio, data_media FROM carteiras WHERE username={PARAM}", (usr,))
     df_cart = pd.DataFrame(c.fetchall(), columns=["Ativo", "Quantidade", "Preço Médio", "Data Média"])
-    if not df_cart.empty: 
-        df_cart['Data Média'] = pd.to_datetime(df_cart['Data Média']).dt.date
-    else: 
-        df_cart = pd.DataFrame(columns=["Ativo", "Quantidade", "Preço Médio", "Data Média"])
-        
+    if not df_cart.empty: df_cart['Data Média'] = pd.to_datetime(df_cart['Data Média']).dt.date
+    else: df_cart = pd.DataFrame(columns=["Ativo", "Quantidade", "Preço Médio", "Data Média"])
     st.session_state.df_base = df_cart
     
     c.execute(f"SELECT titulo, data_compra, tipo_taxa, investido, taxa, vencimento FROM tesouro_v2 WHERE username={PARAM}", (usr,))
     df_tes = pd.DataFrame(c.fetchall(), columns=["Título", "Data Compra", "Tipo Taxa", "Valor Investido (R$)", "Taxa Contratada (%)", "Ano Vencimento"])
-    if not df_tes.empty: 
-        df_tes['Data Compra'] = pd.to_datetime(df_tes['Data Compra']).dt.date
-    else: 
-        df_tes = pd.DataFrame(columns=["Título", "Data Compra", "Tipo Taxa", "Valor Investido (R$)", "Taxa Contratada (%)", "Ano Vencimento", "Valor Futuro no Vencimento"])
-        
+    if not df_tes.empty: df_tes['Data Compra'] = pd.to_datetime(df_tes['Data Compra']).dt.date
+    else: df_tes = pd.DataFrame(columns=["Título", "Data Compra", "Tipo Taxa", "Valor Investido (R$)", "Taxa Contratada (%)", "Ano Vencimento", "Valor Futuro no Vencimento"])
     st.session_state.df_tesouro = df_tes
     
     c.execute(f"SELECT role, content FROM chat_ia WHERE username={PARAM}", (usr,))
     df_chat = pd.DataFrame(c.fetchall(), columns=["role", "content"])
     conn.close()
-    
-    if not df_chat.empty: 
-        st.session_state.historico_chat = df_chat.to_dict('records')
-    else: 
-        st.session_state.historico_chat = [{"role": "assistant", "content": f"Saudações, {username}. O terminal está mapeado e pronto."}]
+    if not df_chat.empty: st.session_state.historico_chat = df_chat.to_dict('records')
+    else: st.session_state.historico_chat = [{"role": "assistant", "content": f"Saudações, {username}. Terminal pronto."}]
+        
+    conn.close()
 
 init_db()
 
@@ -1082,10 +1030,9 @@ if st.session_state.dados_mercado:
                             st.plotly_chart(fig_comp_m, use_container_width=True)
                 else:
                     st.warning("Selecione ao menos um ativo para visualizar o gráfico.")
-with tab_prov:
+
+    with tab_prov:
         st.markdown("### 💸 Proventos Mensais e Status de Pagamento B3")
-        st.info("💡 **Semáforo de Pagamento:** 🟢 Mês já encerrado (Pago). 🟡 Mês vigente ou futuro (Divulgado a receber). 🟠 Sem anúncio para o mês.")
-        
         cf1, cf2, c_btn = st.columns([2, 2, 2])
         m_map = {1:"Janeiro", 2:"Fevereiro", 3:"Março", 4:"Abril", 5:"Maio", 6:"Junho", 7:"Julho", 8:"Agosto", 9:"Setembro", 10:"Outubro", 11:"Novembro", 12:"Dezembro"}
         
@@ -1093,7 +1040,7 @@ with tab_prov:
         a_hoje = pd.Timestamp.now().year
         
         m_sel = cf1.selectbox("Mês do Provento:", options=list(m_map.keys()), format_func=lambda x: m_map[x], index=m_hoje-1)
-        a_sel = cf2.selectbox("Ano de Referência:", options=[a_hoje+1, a_hoje, a_hoje-1, a_hoje-2], index=1)
+        a_sel = cf2.selectbox("Ano de Referência:", options=[a_hoje, a_hoje-1, a_hoje-2])
         
         if c_btn.button("🔄 Processar Renda Mensal", use_container_width=True):
             with st.spinner("Buscando agenda de pagamentos na B3..."):
@@ -1111,19 +1058,23 @@ with tab_prov:
                     rec = val * dm['Qtd']
                     yoc = (rec / (dm['Qtd'] * dm['PM'])) * 100 if dm['PM'] > 0 else 0
                     
-                    # Lógica do Semáforo Baseado no Tempo
-                    if val > 0:
-                        if a_sel < a_hoje or (a_sel == a_hoje and m_sel < m_hoje):
-                            status = "Pago 🟢"
-                        else:
-                            status = "Divulgado 🟡"
-                    else:
-                        status = "Ainda não divulgado 🟠"
-                        
                     if dm['Tipo'] == 'FII':
-                        lf.append({"Fundo (FII)": t_tk, "Unitário (R$)": val, "Recebido/Projetado (R$)": rec, "Yield on Cost (%)": yoc, "Status": status})
+                        lf.append({
+                            "Fundo (FII)": t_tk, 
+                            "Unitário (R$)": val, 
+                            "Recebido (R$)": rec, 
+                            "Yield on Cost (%)": yoc, 
+                            "Status": "Divulgado / Pago 🟢" if val > 0 else "Aguardando 🟡"
+                        })
                     else:
-                        la.append({"Ação": t_tk, "Unitário (R$)": val, "Recebido/Projetado (R$)": rec, "Yield on Cost (%)": yoc, "Status": status})
+                        if val > 0: 
+                            la.append({
+                                "Ação": t_tk, 
+                                "Unitário (R$)": val, 
+                                "Recebido (R$)": rec, 
+                                "Yield on Cost (%)": yoc, 
+                                "Status": "Pago 🟢"
+                            })
                 
                 st.session_state.divs_a = pd.DataFrame(la)
                 st.session_state.divs_f = pd.DataFrame(lf)
@@ -1131,34 +1082,19 @@ with tab_prov:
                 st.session_state.divs_ano = a_sel
         
         if ('divs_a' in st.session_state and not st.session_state.divs_a.empty) or ('divs_f' in st.session_state and not st.session_state.divs_f.empty):
+            tot_mes = 0.0
             
-            tot_pago = 0.0
-            tot_divulgado = 0.0
-            
-            def somar_status(df):
-                if df.empty: return 0.0, 0.0
-                p = df[df['Status'] == 'Pago 🟢']['Recebido/Projetado (R$)'].sum()
-                d = df[df['Status'] == 'Divulgado 🟡']['Recebido/Projetado (R$)'].sum()
-                return p, d
-
             if 'divs_f' in st.session_state and not st.session_state.divs_f.empty:
                 st.markdown("#### 🏢 Status dos Fundos Imobiliários (FIIs)")
-                st.dataframe(st.session_state.divs_f.style.format({"Unitário (R$)": f_brl_4, "Recebido/Projetado (R$)": f_brl, "Yield on Cost (%)": f_pct}), use_container_width=True, hide_index=True)
-                p, d = somar_status(st.session_state.divs_f)
-                tot_pago += p; tot_divulgado += d
+                st.dataframe(st.session_state.divs_f.style.format({"Unitário (R$)": f_brl_4, "Recebido (R$)": f_brl, "Yield on Cost (%)": f_pct}), use_container_width=True, hide_index=True)
+                tot_mes += st.session_state.divs_f['Recebido (R$)'].sum()
                 
             if 'divs_a' in st.session_state and not st.session_state.divs_a.empty:
                 st.markdown("#### 📈 Ações Pagadoras")
-                st.dataframe(st.session_state.divs_a.style.format({"Unitário (R$)": f_brl_4, "Recebido/Projetado (R$)": f_brl, "Yield on Cost (%)": f_pct}), use_container_width=True, hide_index=True)
-                p, d = somar_status(st.session_state.divs_a)
-                tot_pago += p; tot_divulgado += d
+                st.dataframe(st.session_state.divs_a.style.format({"Unitário (R$)": f_brl_4, "Recebido (R$)": f_brl, "Yield on Cost (%)": f_pct}), use_container_width=True, hide_index=True)
+                tot_mes += st.session_state.divs_a['Recebido (R$)'].sum()
                 
-            st.markdown("---")
-            st.markdown("### 📊 Resumo de Proventos do Mês")
-            cd1, cd2, cd3 = st.columns(3)
-            cd1.metric("🟢 Dinheiro na Conta (Já Recebido)", f_brl(tot_pago))
-            cd2.metric("🟡 Direitos a Receber (Divulgado)", f_brl(tot_divulgado))
-            cd3.metric("💰 Total do Mês (Pago + Divulgado)", f_brl(tot_pago + tot_divulgado))
+            st.success(f"**💰 Total Estimado de Proventos no Período ({m_map[st.session_state.divs_m]}/{st.session_state.divs_ano}):** {f_brl(tot_mes)}")
             
         st.markdown("---")
         st.markdown("### 🏛️ Histórico Analítico de Proventos (Tempo de Posse)")
@@ -1204,6 +1140,11 @@ with tab_prov:
                 
                 xls_buffer = to_excel(df_hist_f, sheet_name="Historico_Proventos")
                 st.download_button(label="📥 Baixar Histórico de Proventos em Planilha (Excel)", data=xls_buffer, file_name=f"Historico_Proventos_{st.session_state.username}.xlsx", mime="application/vnd.ms-excel", use_container_width=True)
+
+else:
+    for tb in [tab_visao, tab_val, tab_radar, tab_graf, tab_prov]:
+        with tb: 
+            st.info("ℹ️ Adicione ativos na tabela de Controle Manual ou via upload de planilha na barra lateral. Depois, clique em **Conectar ao Mercado Vivo** para preencher essas abas.")
 
 # ==========================================
 # 8. ABAS ISOLADAS (SEMPRE ATIVAS)
