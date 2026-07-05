@@ -1097,7 +1097,7 @@ if st.session_state.dados_mercado:
             st.success(f"**💰 Total Estimado de Proventos no Período ({m_map[st.session_state.divs_m]}/{st.session_state.divs_ano}):** {f_brl(tot_mes)}")
             
         st.markdown("---")
-        st.markdown("### 🏛️ Histórico Analítico de Proventos (Tempo de Posse)")
+        st.markdown("### 🏛️ Histórico Analítico de Proventos (Todo o Tempo de Posse)")
         l_hist = []
         for t_hist, dm_hist in st.session_state.dados_mercado.items():
             try:
@@ -1140,12 +1140,6 @@ if st.session_state.dados_mercado:
                 
                 xls_buffer = to_excel(df_hist_f, sheet_name="Historico_Proventos")
                 st.download_button(label="📥 Baixar Histórico de Proventos em Planilha (Excel)", data=xls_buffer, file_name=f"Historico_Proventos_{st.session_state.username}.xlsx", mime="application/vnd.ms-excel", use_container_width=True)
-
-else:
-    for tb in [tab_visao, tab_val, tab_radar, tab_graf, tab_prov]:
-        with tb: 
-            st.info("ℹ️ Adicione ativos na tabela de Controle Manual ou via upload de planilha na barra lateral. Depois, clique em **Conectar ao Mercado Vivo** para preencher essas abas.")
-
 # ==========================================
 # 8. ABAS ISOLADAS (SEMPRE ATIVAS)
 # ==========================================
