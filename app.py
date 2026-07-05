@@ -153,6 +153,43 @@ def init_db():
     conn.close()
 
 def salvar_dados_completos_db(username):
+    def hash_password(password): 
+    return hashlib.sha256(password.encode()).hexdigest()
+
+def registrar_usuario(username, password):
+    conn = get_db_connection()
+    c = conn.cursor()
+    try:
+        c.execute(f"INSERT INTO usuarios (username, password) VALUES ({PARAM}, {PARAM})", (username.strip(), hash_password(password)))
+        conn.commit()
+        conn.close()
+        return True
+    except:
+        conn.close()
+        return False
+
+def autenticar_usuario(username, password):
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(f"SELECT * FROM usuarios WHERE username={PARAM} AND password={PARAM}", (username.strip(), hash_password(password)))
+    user = c.fetchone()
+    conn.close()
+    return user is not None
+
+def atualizar_senha(username, nova_senha):
+    usr = username.strip()
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(f"SELECT * FROM usuarios WHERE username={PARAM}", (usr,))
+    user = c.fetchone()
+    if user is None:
+        conn.close()
+        return False
+        
+    c.execute(f"UPDATE usuarios SET password={PARAM} WHERE username={PARAM}", (hash_password(nova_senha), usr))
+    conn.commit()
+    conn.close()
+    return True
     conn = get_db_connection(); c = conn.cursor()
     usr = username.strip()
     
