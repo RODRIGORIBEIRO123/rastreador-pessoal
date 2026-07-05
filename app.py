@@ -1030,71 +1030,115 @@ if st.session_state.dados_mercado:
                             st.plotly_chart(fig_comp_m, use_container_width=True)
                 else:
                     st.warning("Selecione ao menos um ativo para visualizar o gráfico.")
-
-    with tab_prov:
-        st.markdown("### 💸 Proventos Mensais e Status de Pagamento B3")
+with tab_prov:
+        st.markdown("### 💸 Proventos Mensais e Status de Pagamento (Motor Brapi)")
+        st.info("💡 **Precisão Institucional:** O sistema agora varre a B3 buscando a **data exata de pagamento** em que o dinheiro vai cair na sua conta, dividindo milimetricamente o que já foi depositado e o que ainda vai cair.")
+        
+        brapi_token = st.secrets.get("BRAPI_TOKEN", "")
+        if not brapi_token:
+            brapi_token = st.text_input("🔑 Insira seu Token da Brapi (Para buscar as datas exatas):", type="password")
+            st.markdown("*(Ainda não tem? Crie sua conta grátis em [brapi.dev](https://brapi.dev/) e copie o token do painel)*")
+            
         cf1, cf2, c_btn = st.columns([2, 2, 2])
         m_map = {1:"Janeiro", 2:"Fevereiro", 3:"Março", 4:"Abril", 5:"Maio", 6:"Junho", 7:"Julho", 8:"Agosto", 9:"Setembro", 10:"Outubro", 11:"Novembro", 12:"Dezembro"}
         
         m_hoje = pd.Timestamp.now().month
         a_hoje = pd.Timestamp.now().year
+        hoje = pd.Timestamp.now().date()
         
-        m_sel = cf1.selectbox("Mês do Provento:", options=list(m_map.keys()), format_func=lambda x: m_map[x], index=m_hoje-1)
-        a_sel = cf2.selectbox("Ano de Referência:", options=[a_hoje, a_hoje-1, a_hoje-2])
+        m_sel = cf1.selectbox("Mês de Pagamento:", options=list(m_map.keys()), format_func=lambda x: m_map[x], index=m_hoje-1)
+        a_sel = cf2.selectbox("Ano de Pagamento:", options=[a_hoje+1, a_hoje, a_hoje-1, a_hoje-2], index=1)
         
         if c_btn.button("🔄 Processar Renda Mensal", use_container_width=True):
-            with st.spinner("Buscando agenda de pagamentos na B3..."):
-                la, lf = [], []
-                for t_tk, dm in st.session_state.dados_mercado.items():
-                    val = 0.0
-                    try:
-                        divs = yf.Ticker(f"{t_tk}.SA").dividends
-                        if not divs.empty:
-                            if divs.index.tz is not None: 
-                                divs.index = divs.index.tz_localize(None)
-                            val = float(divs[(divs.index.month == m_sel) & (divs.index.year == a_sel)].sum())
-                    except: pass
+            if not brapi_token:
+                st.error("⚠️ O Motor Brapi exige o Token para se conectar à B3. Insira-o no campo acima.")
+            else:
+                with st.spinner("Conectando aos servidores da Brapi para rastrear a agenda de pagamentos..."):
+                    la, lf = [], []
+                    for t_tk, dm in st.session_state.dados_mercado.items():
+                        val_pago = 0.0
+                        val_divulgado = 0.0
+                        
+                        try:
+                            # Nova requisição para a API Brasileira
+                            url = f"https://brapi.dev/api/quote/{t_tk}?token={brapi_token}&modules=dividends"
+                            res = requests.get(url, timeout=10)
+                            
+                            if res.status_code == 200:
+                                data = res.json()
+                                results = data.get('results', [])
+                                if results:
+                                    divs = results[0].get('dividendsData', {}).get('cashDividends', [])
+                                    
+                                    for div in divs:
+                                        p_date_str = div.get('paymentDate')
+                                        if not p_date_str: continue
+                                        
+                                        p_date = pd.to_datetime(p_date_str).tz_localize(None).date()
+                                        
+                                        # Filtro com exatidão no mês/ano que o dinheiro CAI na conta
+                                        if p_date.month == m_sel and p_date.year == a_sel:
+                                            rate = float(div.get('rate', 0.0))
+                                            # Checagem de tempo real contra a data de hoje
+                                            if p_date <= hoje:
+                                                val_pago += rate
+                                            else:
+                                                val_divulgado += rate
+                        except: pass
+                        
+                        val_total = val_pago + val_divulgado
+                        rec = val_total * dm['Qtd']
+                        yoc = (rec / (dm['Qtd'] * dm['PM'])) * 100 if dm['PM'] > 0 else 0
+                        
+                        # --- LÓGICA DO SEMÁFORO EXATO ---
+                        if val_total > 0:
+                            if val_divulgado > 0 and val_pago == 0:
+                                status = "Divulgado 🟡"
+                            elif val_pago > 0 and val_divulgado == 0:
+                                status = "Pago 🟢"
+                            else:
+                                status = "Parcialmente Pago 🟢🟡"
+                        else:
+                            status = "Ainda não divulgado 🟠"
+                            
+                        # Empacota os dados separando o que foi pago do que é futuro
+                        if dm['Tipo'] == 'FII':
+                            lf.append({"Fundo (FII)": t_tk, "Unitário (R$)": val_total, "Recebido/Projetado (R$)": rec, "Yield on Cost (%)": yoc, "Status": status, "Valor Pago": val_pago * dm['Qtd'], "Valor Divulgado": val_divulgado * dm['Qtd']})
+                        else:
+                            la.append({"Ação": t_tk, "Unitário (R$)": val_total, "Recebido/Projetado (R$)": rec, "Yield on Cost (%)": yoc, "Status": status, "Valor Pago": val_pago * dm['Qtd'], "Valor Divulgado": val_divulgado * dm['Qtd']})
                     
-                    rec = val * dm['Qtd']
-                    yoc = (rec / (dm['Qtd'] * dm['PM'])) * 100 if dm['PM'] > 0 else 0
-                    
-                    if dm['Tipo'] == 'FII':
-                        lf.append({
-                            "Fundo (FII)": t_tk, 
-                            "Unitário (R$)": val, 
-                            "Recebido (R$)": rec, 
-                            "Yield on Cost (%)": yoc, 
-                            "Status": "Divulgado / Pago 🟢" if val > 0 else "Aguardando 🟡"
-                        })
-                    else:
-                        if val > 0: 
-                            la.append({
-                                "Ação": t_tk, 
-                                "Unitário (R$)": val, 
-                                "Recebido (R$)": rec, 
-                                "Yield on Cost (%)": yoc, 
-                                "Status": "Pago 🟢"
-                            })
-                
-                st.session_state.divs_a = pd.DataFrame(la)
-                st.session_state.divs_f = pd.DataFrame(lf)
-                st.session_state.divs_m = m_sel
-                st.session_state.divs_ano = a_sel
+                    st.session_state.divs_a = pd.DataFrame(la)
+                    st.session_state.divs_f = pd.DataFrame(lf)
+                    st.session_state.divs_m = m_sel
+                    st.session_state.divs_ano = a_sel
         
+        # Renderização das Tabelas e Totalizadores de Bolinha
         if ('divs_a' in st.session_state and not st.session_state.divs_a.empty) or ('divs_f' in st.session_state and not st.session_state.divs_f.empty):
-            tot_mes = 0.0
+            tot_pago = 0.0
+            tot_divulgado = 0.0
             
+            def exibir_tabela_status(df, titulo):
+                if df.empty: return 0.0, 0.0
+                st.markdown(f"#### {titulo}")
+                # Remove colunas auxiliares de matemática para não sujar a interface
+                df_display = df.drop(columns=['Valor Pago', 'Valor Divulgado'])
+                st.dataframe(df_display.style.format({"Unitário (R$)": f_brl_4, "Recebido/Projetado (R$)": f_brl, "Yield on Cost (%)": f_pct}), use_container_width=True, hide_index=True)
+                return df['Valor Pago'].sum(), df['Valor Divulgado'].sum()
+
             if 'divs_f' in st.session_state and not st.session_state.divs_f.empty:
-                st.markdown("#### 🏢 Status dos Fundos Imobiliários (FIIs)")
-                st.dataframe(st.session_state.divs_f.style.format({"Unitário (R$)": f_brl_4, "Recebido (R$)": f_brl, "Yield on Cost (%)": f_pct}), use_container_width=True, hide_index=True)
-                tot_mes += st.session_state.divs_f['Recebido (R$)'].sum()
+                p, d = exibir_tabela_status(st.session_state.divs_f, "🏢 Status dos Fundos Imobiliários (FIIs)")
+                tot_pago += p; tot_divulgado += d
                 
             if 'divs_a' in st.session_state and not st.session_state.divs_a.empty:
-                st.markdown("#### 📈 Ações Pagadoras")
-                st.dataframe(st.session_state.divs_a.style.format({"Unitário (R$)": f_brl_4, "Recebido (R$)": f_brl, "Yield on Cost (%)": f_pct}), use_container_width=True, hide_index=True)
-                tot_mes += st.session_state.divs_a['Recebido (R$)'].sum()
+                p, d = exibir_tabela_status(st.session_state.divs_a, "📈 Ações Pagadoras")
+                tot_pago += p; tot_divulgado += d
                 
-            st.success(f"**💰 Total Estimado de Proventos no Período ({m_map[st.session_state.divs_m]}/{st.session_state.divs_ano}):** {f_brl(tot_mes)}")
+            st.markdown("---")
+            st.markdown("### 📊 Resumo Financeiro do Mês")
+            cd1, cd2, cd3 = st.columns(3)
+            cd1.metric("🟢 Dinheiro na Conta (Já Recebido)", f_brl(tot_pago))
+            cd2.metric("🟡 Direitos a Receber (Divulgado)", f_brl(tot_divulgado))
+            cd3.metric("💰 Total do Mês (Pago + Divulgado)", f_brl(tot_pago + tot_divulgado))
             
         st.markdown("---")
         st.markdown("### 🏛️ Histórico Analítico de Proventos (Tempo de Posse)")
@@ -1103,31 +1147,18 @@ if st.session_state.dados_mercado:
             try:
                 divs_h = yf.Ticker(f"{t_hist}.SA").dividends
                 if not divs_h.empty:
-                    if divs_h.index.tz is not None: 
-                        divs_h.index = divs_h.index.tz_localize(None)
+                    if divs_h.index.tz is not None: divs_h.index = divs_h.index.tz_localize(None)
                     divs_fil = divs_h[divs_h.index >= pd.Timestamp(dm_hist['Data'])]
                     for d_idx, val_h in divs_fil.items():
                         t_rec = val_h * dm_hist['Qtd']
                         inv_h = dm_hist['Qtd'] * dm_hist['PM']
-                        yoc_h = (t_rec / inv_h) * 100 if inv_h > 0 else 0
-                        dy_h = (val_h / dm_hist['Preço Atual']) * 100 if dm_hist['Preço Atual'] > 0 else 0
-                        
-                        l_hist.append({
-                            "Data Ex": d_idx.date(), 
-                            "Ativo": t_hist, 
-                            "Unitário (R$)": float(val_h), 
-                            "Quantidade": int(dm_hist['Qtd']), 
-                            "Recebido (R$)": float(t_rec), 
-                            "Yield on Cost (%)": float(yoc_h), 
-                            "DY Atual (%)": float(dy_h)
-                        })
+                        l_hist.append({"Data Ex": d_idx.date(), "Ativo": t_hist, "Unitário (R$)": float(val_h), "Quantidade": int(dm_hist['Qtd']), "Recebido (R$)": float(t_rec), "Yield on Cost (%)": float((t_rec / inv_h) * 100 if inv_h > 0 else 0), "DY Atual (%)": float((val_h / dm_hist['Preço Atual']) * 100 if dm_hist['Preço Atual'] > 0 else 0)})
             except: pass
             
         if l_hist:
             df_hist_tot = pd.DataFrame(l_hist).sort_values("Data Ex", ascending=False)
             c_h1, c_h2 = st.columns(2)
             atvs_disp = sorted(df_hist_tot['Ativo'].unique().tolist())
-            
             atvs_sel = c_h1.multiselect("Filtrar Tabela por Ativo:", options=atvs_disp, default=atvs_disp)
             r_hist = c_h2.date_input("Filtrar Tabela por Período:", value=(min(df_hist_tot['Data Ex']), max(df_hist_tot['Data Ex'])))
             
@@ -1137,14 +1168,7 @@ if st.session_state.dados_mercado:
                 
             if not df_hist_f.empty:
                 st.dataframe(df_hist_f.style.format({"Unitário (R$)": f_brl_4, "Recebido (R$)": f_brl, "Yield on Cost (%)": f_pct, "DY Atual (%)": f_pct}), use_container_width=True, hide_index=True)
-                
-                xls_buffer = to_excel(df_hist_f, sheet_name="Historico_Proventos")
-                st.download_button(label="📥 Baixar Histórico de Proventos em Planilha (Excel)", data=xls_buffer, file_name=f"Historico_Proventos_{st.session_state.username}.xlsx", mime="application/vnd.ms-excel", use_container_width=True)
-
-else:
-    for tb in [tab_visao, tab_val, tab_radar, tab_graf, tab_prov]:
-        with tb: 
-            st.info("ℹ️ Adicione ativos na tabela de Controle Manual ou via upload de planilha na barra lateral. Depois, clique em **Conectar ao Mercado Vivo** para preencher essas abas.")
+                st.download_button(label="📥 Baixar Histórico (Excel)", data=to_excel(df_hist_f, sheet_name="Historico_Proventos"), file_name=f"Historico_Proventos_{st.session_state.username}.xlsx", mime="application/vnd.ms-excel", use_container_width=True)
 
 # ==========================================
 # 8. ABAS ISOLADAS (SEMPRE ATIVAS)
