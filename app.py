@@ -142,18 +142,19 @@ def init_db():
     conn = get_db_connection()
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS usuarios (username TEXT PRIMARY KEY, password TEXT)''')
+    
     if IS_POSTGRES:
         c.execute('''CREATE TABLE IF NOT EXISTS carteiras (username TEXT, ativo TEXT, quantidade DOUBLE PRECISION, preco_medio DOUBLE PRECISION, data_media TEXT)''')
         c.execute('''CREATE TABLE IF NOT EXISTS tesouro_v2 (username TEXT, titulo TEXT, data_compra TEXT, tipo_taxa TEXT, investido DOUBLE PRECISION, taxa DOUBLE PRECISION, vencimento INTEGER)''')
     else:
         c.execute('''CREATE TABLE IF NOT EXISTS carteiras (username TEXT, Ativo TEXT, Quantidade REAL, Preco_Medio REAL, Data_Media TEXT)''')
         c.execute('''CREATE TABLE IF NOT EXISTS tesouro_v2 (username TEXT, titulo TEXT, data_compra TEXT, tipo_taxa TEXT, investido REAL, taxa REAL, vencimento INTEGER)''')
+        
     c.execute('''CREATE TABLE IF NOT EXISTS chat_ia (username TEXT, role TEXT, content TEXT)''')
     conn.commit()
     conn.close()
 
-def salvar_dados_completos_db(username):
-    def hash_password(password): 
+def hash_password(password): 
     return hashlib.sha256(password.encode()).hexdigest()
 
 def registrar_usuario(username, password):
@@ -190,7 +191,10 @@ def atualizar_senha(username, nova_senha):
     conn.commit()
     conn.close()
     return True
-    conn = get_db_connection(); c = conn.cursor()
+
+def salvar_dados_completos_db(username):
+    conn = get_db_connection()
+    c = conn.cursor()
     usr = username.strip()
     
     # Salvar Carteira B3
@@ -204,7 +208,8 @@ def atualizar_senha(username, nova_senha):
     c.execute(f"DELETE FROM tesouro_v2 WHERE username={PARAM}", (usr,))
     if isinstance(st.session_state.df_tesouro, pd.DataFrame) and not st.session_state.df_tesouro.empty:
         for _, r in st.session_state.df_tesouro.iterrows():
-            if pd.isna(r.get('Título')) or str(r.get('Título')).strip() == '': continue
+            if pd.isna(r.get('Título')) or str(r.get('Título')).strip() == '': 
+                continue
             c.execute(f"INSERT INTO tesouro_v2 (username, titulo, data_compra, tipo_taxa, investido, taxa, vencimento) VALUES ({PARAM}, {PARAM}, {PARAM}, {PARAM}, {PARAM}, {PARAM}, {PARAM})",
                       (usr, str(r.get('Título', 'Tesouro')), str(r.get('Data Compra', '')), str(r.get('Tipo Taxa', 'Pré-fixado')), float(limpar_numero(r.get('Valor Investido (R$)', 0))), float(limpar_numero(r.get('Taxa Contratada (%)', 0))), int(limpar_numero(r.get('Ano Vencimento', 2030)))))
             
@@ -212,31 +217,41 @@ def atualizar_senha(username, nova_senha):
     c.execute(f"DELETE FROM chat_ia WHERE username={PARAM}", (usr,))
     for msg in st.session_state.historico_chat[-30:]:
         c.execute(f"INSERT INTO chat_ia (username, role, content) VALUES ({PARAM}, {PARAM}, {PARAM})", (usr, msg['role'], msg['content']))
-    conn.commit(); conn.close()
+        
+    conn.commit()
+    conn.close()
 
 def carregar_dados_completos_db(username):
-    conn = get_db_connection(); c = conn.cursor()
+    conn = get_db_connection()
+    c = conn.cursor()
     usr = username.strip()
     
     c.execute(f"SELECT ativo, quantidade, preco_medio, data_media FROM carteiras WHERE username={PARAM}", (usr,))
     df_cart = pd.DataFrame(c.fetchall(), columns=["Ativo", "Quantidade", "Preço Médio", "Data Média"])
-    if not df_cart.empty: df_cart['Data Média'] = pd.to_datetime(df_cart['Data Média']).dt.date
-    else: df_cart = pd.DataFrame(columns=["Ativo", "Quantidade", "Preço Médio", "Data Média"])
+    if not df_cart.empty: 
+        df_cart['Data Média'] = pd.to_datetime(df_cart['Data Média']).dt.date
+    else: 
+        df_cart = pd.DataFrame(columns=["Ativo", "Quantidade", "Preço Médio", "Data Média"])
+        
     st.session_state.df_base = df_cart
     
     c.execute(f"SELECT titulo, data_compra, tipo_taxa, investido, taxa, vencimento FROM tesouro_v2 WHERE username={PARAM}", (usr,))
     df_tes = pd.DataFrame(c.fetchall(), columns=["Título", "Data Compra", "Tipo Taxa", "Valor Investido (R$)", "Taxa Contratada (%)", "Ano Vencimento"])
-    if not df_tes.empty: df_tes['Data Compra'] = pd.to_datetime(df_tes['Data Compra']).dt.date
-    else: df_tes = pd.DataFrame(columns=["Título", "Data Compra", "Tipo Taxa", "Valor Investido (R$)", "Taxa Contratada (%)", "Ano Vencimento", "Valor Futuro no Vencimento"])
+    if not df_tes.empty: 
+        df_tes['Data Compra'] = pd.to_datetime(df_tes['Data Compra']).dt.date
+    else: 
+        df_tes = pd.DataFrame(columns=["Título", "Data Compra", "Tipo Taxa", "Valor Investido (R$)", "Taxa Contratada (%)", "Ano Vencimento", "Valor Futuro no Vencimento"])
+        
     st.session_state.df_tesouro = df_tes
     
     c.execute(f"SELECT role, content FROM chat_ia WHERE username={PARAM}", (usr,))
     df_chat = pd.DataFrame(c.fetchall(), columns=["role", "content"])
     conn.close()
-    if not df_chat.empty: st.session_state.historico_chat = df_chat.to_dict('records')
-    else: st.session_state.historico_chat = [{"role": "assistant", "content": f"Saudações, {username}. Terminal pronto."}]
-        
-    conn.close()
+    
+    if not df_chat.empty: 
+        st.session_state.historico_chat = df_chat.to_dict('records')
+    else: 
+        st.session_state.historico_chat = [{"role": "assistant", "content": f"Saudações, {username}. O terminal está mapeado e pronto."}]
 
 init_db()
 
