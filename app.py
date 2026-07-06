@@ -1164,42 +1164,42 @@ if st.session_state.dados_mercado:
         a_sel = cf2.selectbox("Ano de Referência:", options=[a_hoje, a_hoje-1, a_hoje-2])
         
         if c_btn.button("🔄 Processar Renda Mensal", use_container_width=True):
-            with st.spinner("Buscando agenda de pagamentos na B3..."):
+            with st.spinner("Lendo base de dados local (Livro-Razão)..."):
                 la, lf = [], []
                 for t_tk, dm in st.session_state.dados_mercado.items():
-                    val = 0.0
-                    try:
-                        divs = yf.Ticker(f"{t_tk}.SA").dividends
-                        if not dvs.empty:
-                            if dvs.index.tz is not None: 
-                                dvs.index = dvs.index.tz_localize(None)
-                            val = float(divs[(divs.index.month == m_sel) & (divs.index.year == a_sel)].sum())
-                    except: pass
+                    val_recebido = 0.0
+                    val_unitario = 0.0
                     
-                    rec = val * dm['Qtd']
-                    yoc = (rec / (dm['Qtd'] * dm['PM'])) * 100 if dm['PM'] > 0 else 0
+                    # --- NOVO MOTOR: Bypassa o Yahoo Finance e lê direto do seu Banco de Dados Local ---
+                    if 'df_ledger' in st.session_state and not st.session_state.df_ledger.empty:
+                        df_l = st.session_state.df_ledger
+                        df_f_mes = df_l[(df_l['Ativo'] == t_tk) & (pd.to_datetime(df_l['Data Ex']).dt.month == m_sel) & (pd.to_datetime(df_l['Data Ex']).dt.year == a_sel)]
+                        if not df_f_mes.empty:
+                            val_recebido = float(df_f_mes['Valor Recebido (R$)'].sum())
+                            # Deduz o valor unitário com base na quantidade
+                            val_unitario = val_recebido / dm['Qtd'] if dm['Qtd'] > 0 else 0.0
                     
-                    # Cálculo de DY Atual sobre o fechamento vivo
-                    dy_m = (val / dm['Preço Atual']) * 100 if dm['Preço Atual'] > 0 else 0
+                    yoc = (val_recebido / (dm['Qtd'] * dm['PM'])) * 100 if dm['PM'] > 0 else 0
+                    dy_m = (val_unitario / dm['Preço Atual']) * 100 if dm['Preço Atual'] > 0 else 0
                     
                     if dm['Tipo'] == 'FII':
                         lf.append({
                             "Fundo (FII)": t_tk, 
-                            "Unitário (R$)": val, 
-                            "Recebido (R$)": rec, 
+                            "Unitário (R$)": val_unitario, 
+                            "Recebido (R$)": val_recebido, 
                             "Yield on Cost (%)": yoc, 
                             "DY Atual (%)": dy_m,
-                            "Status": "Divulgado / Pago 🟢" if val > 0 else "Aguardando 🟡"
+                            "Status": "Pago / Provisionado 🟢" if val_unitario > 0 else "Aguardando 🟡"
                         })
                     else:
-                        if val > 0: 
+                        if val_unitario > 0: 
                             la.append({
                                 "Ação": t_tk, 
-                                "Unitário (R$)": val, 
-                                "Recebido (R$)": rec, 
+                                "Unitário (R$)": val_unitario, 
+                                "Recebido (R$)": val_recebido, 
                                 "Yield on Cost (%)": yoc, 
                                 "DY Atual (%)": dy_m,
-                                "Status": "Pago 🟢"
+                                "Status": "Pago / Provisionado 🟢"
                             })
                 
                 st.session_state.divs_a = pd.DataFrame(la)
