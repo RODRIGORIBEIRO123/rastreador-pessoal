@@ -1171,15 +1171,15 @@ if st.session_state.dados_mercado:
                     try:
                         divs = yf.Ticker(f"{t_tk}.SA").dividends
                         if not dvs.empty:
-                            if divs.index.tz is not None: 
-                                divs.index = divs.index.tz_localize(None)
+                            if dvs.index.tz is not None: 
+                                dvs.index = dvs.index.tz_localize(None)
                             val = float(divs[(divs.index.month == m_sel) & (divs.index.year == a_sel)].sum())
                     except: pass
                     
                     rec = val * dm['Qtd']
                     yoc = (rec / (dm['Qtd'] * dm['PM'])) * 100 if dm['PM'] > 0 else 0
                     
-                    # --- NOVO: CÁLCULO DE DY ATUAL SOBRE O FECHAMENTO VIVO ---
+                    # Cálculo de DY Atual sobre o fechamento vivo
                     dy_m = (val / dm['Preço Atual']) * 100 if dm['Preço Atual'] > 0 else 0
                     
                     if dm['Tipo'] == 'FII':
@@ -1188,7 +1188,7 @@ if st.session_state.dados_mercado:
                             "Unitário (R$)": val, 
                             "Recebido (R$)": rec, 
                             "Yield on Cost (%)": yoc, 
-                            "DY Atual (%)": dy_m, # Adicionado na tabela
+                            "DY Atual (%)": dy_m,
                             "Status": "Divulgado / Pago 🟢" if val > 0 else "Aguardando 🟡"
                         })
                     else:
@@ -1198,7 +1198,7 @@ if st.session_state.dados_mercado:
                                 "Unitário (R$)": val, 
                                 "Recebido (R$)": rec, 
                                 "Yield on Cost (%)": yoc, 
-                                "DY Atual (%)": dy_m, # Adicionado na tabela
+                                "DY Atual (%)": dy_m,
                                 "Status": "Pago 🟢"
                             })
                 
@@ -1207,19 +1207,20 @@ if st.session_state.dados_mercado:
                 st.session_state.divs_m = m_sel
                 st.session_state.divs_ano = a_sel
         
-        if ('divs_a' in st.session_state and not st.session_state.divs_a.empty) or ('divs_f' in st.session_state and not st.session_state.divs_f.empty):
-            tot_mes = 0.0
+        # --- VOLTANDO À ESTRUTURA SEPARADA ORIGINAL (FIIs EM CIMA, AÇÕES EMBAIXO) ---
+        tot_mes = 0.0
+        
+        if 'divs_f' in st.session_state and not st.session_state.divs_f.empty:
+            st.markdown("#### 🏢 Status dos Fundos Imobiliários (FIIs)")
+            st.dataframe(st.session_state.divs_f.style.format({"Unitário (R$)": f_brl_4, "Recebido (R$)": f_brl, "Yield on Cost (%)": f_pct, "DY Atual (%)": f_pct}), use_container_width=True, hide_index=True)
+            tot_mes += st.session_state.divs_f['Recebido (R$)'].sum()
             
-            if 'divs_f' in st.session_state and not st.session_state.divs_f.empty:
-                st.markdown("#### 🏢 Status dos Fundos Imobiliários (FIIs)")
-                st.dataframe(st.session_state.divs_f.style.format({"Unitário (R$)": f_brl_4, "Recebido (R$)": f_brl, "Yield on Cost (%)": f_pct, "DY Atual (%)": f_pct}), use_container_width=True, hide_index=True)
-                tot_mes += st.session_state.divs_f['Recebido (R$)'].sum()
-                
-            if 'divs_a' in st.session_state and not st.session_state.divs_a.empty:
-                st.markdown("#### 📈 Ações Pagadoras")
-                st.dataframe(st.session_state.divs_a.style.format({"Unitário (R$)": f_brl_4, "Recebido (R$)": f_brl, "Yield on Cost (%)": f_pct, "DY Atual (%)": f_pct}), use_container_width=True, hide_index=True)
-                tot_mes += st.session_state.divs_a['Recebido (R$)'].sum()
-                
+        if 'divs_a' in st.session_state and not st.session_state.divs_a.empty:
+            st.markdown("#### 📈 Ações Pagadoras")
+            st.dataframe(st.session_state.divs_a.style.format({"Unitário (R$)": f_brl_4, "Recebido (R$)": f_brl, "Yield on Cost (%)": f_pct, "DY Atual (%)": f_pct}), use_container_width=True, hide_index=True)
+            tot_mes += st.session_state.divs_a['Recebido (R$)'].sum()
+            
+        if ('divs_a' in st.session_state and not st.session_state.divs_a.empty) or ('divs_f' in st.session_state and not st.session_state.divs_f.empty):
             st.success(f"**💰 Total Estimado de Proventos no Período ({m_map[st.session_state.divs_m]}/{st.session_state.divs_ano}):** {f_brl(tot_mes)}")
             
         st.markdown("---")
@@ -1243,24 +1244,19 @@ if st.session_state.dados_mercado:
                 xls_buffer = to_excel(df_hist_f, sheet_name="Livro_Razao")
                 st.download_button(label="📥 Baixar Livro-Razão (Excel)", data=xls_buffer, file_name=f"Livro_Razao_{st.session_state.username}.xlsx", mime="application/vnd.ms-excel", use_container_width=True)
                 
-                # --- SEÇÃO ATUALIZADA: MOTOR AVANÇADO DO GRÁFICO DE HISTÓRICO ---
                 st.markdown("#### 📈 Parâmetros de Visualização dos Proventos")
                 c_gr1, c_gr2, c_gr3 = st.columns([1.5, 1, 1.5])
                 
-                # Parâmetro imutável de escopo: Padrão sempre fixado nos últimos 12 meses
                 default_ini = (pd.Timestamp.now() - pd.DateOffset(months=12)).date()
                 default_fim = pd.Timestamp.now().date()
                 
                 r_periodo = c_gr1.date_input("Filtrar Período do Gráfico:", value=(default_ini, default_fim), key="p_graf_div_custom")
                 
-                # Menu de seleção para isolar apenas 1 ativo específico ou ver todos
                 atvs_disp_graf = ["Todos os Ativos"] + sorted(df_hist_tot['Ativo'].unique().tolist())
                 atv_sel_graf = c_gr2.selectbox("Isolar Ativo no Gráfico:", options=atvs_disp_graf, index=0)
                 
-                # Opção de escolha estrutural entre Unificado ou Dividido por Classe (Ação vs FII)
                 visao_graf = c_gr3.radio("Apresentação Estrutural:", ["Unificado (Consolidado)", "Dividido por Classe (Ação vs FII)"], horizontal=True, key="v_graf_div_custom")
                 
-                # Filtros aplicados em memória de tempo de execução
                 df_chart = df_hist_tot.copy()
                 df_chart['Data Ex'] = pd.to_datetime(df_chart['Data Ex']).dt.date
                 
@@ -1280,8 +1276,9 @@ if st.session_state.dados_mercado:
                         fig_divs.update_traces(texttemplate='R$ %{text:,.2f}', textposition='outside')
                     else:
                         df_chart_g = df_chart.groupby(['Mês/Ano', 'Tipo'])['Valor Recebido (R$)'].sum().reset_index().sort_values('Mês/Ano')
-                        fig_divs = px.bar(df_chart_g, x='Mês/Ano', y='Valor Recebido (R$)', color='Tipo', title="Histórico de Proventos por Classe", color_discrete_map={'Ação': '#1f4e78', 'FII': '#00a896'})
-                        fig_divs.update_layout(barmode='stack')
+                        # --- CORREÇÃO DO GRÁFICO: DEIXA AS COLUNAS LADO A LADO EM VEZ DE EMPILHADAS ---
+                        fig_divs = px.bar(df_chart_g, x='Mês/Ano', y='Valor Recebido (R$)', color='Tipo', barmode='group', title="Histórico de Proventos por Classe (Lado a Lado)", color_discrete_map={'Ação': '#1f4e78', 'FII': '#00a896'})
+                        fig_divs.update_traces(texttemplate='R$ %{y:,.2f}', textposition='outside')
                         
                     st.plotly_chart(fig_divs, use_container_width=True)
                 else:
