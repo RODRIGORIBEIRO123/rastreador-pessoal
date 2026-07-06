@@ -610,6 +610,23 @@ with st.sidebar:
     
     arquivo_principal = st.file_uploader("Substituir Base Completa (B3 / CSV Backup)", type=["xlsx", "csv"])
     arquivo_novo = st.file_uploader("Integrar Novas Operações", type=["xlsx", "csv"])
+
+    if st.button("💾 Salvar no Banco de Dados", type="primary", use_container_width=True):
+        salvar_dados_completos_db(st.session_state.username)
+        st.success("Dados blindados no banco com sucesso!")
+        
+    # --- NOVO: PAINEL DE CONTROLE ADMIN ---
+    st.divider()
+    st.markdown("### 👑 Painel Admin")
+    if st.button("Ver Relatório de Usuários", use_container_width=True):
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute("SELECT username FROM usuarios")
+        usuarios_db = c.fetchall()
+        conn.close()
+        st.info(f"**Total de Contas Registradas:** {len(usuarios_db)}")
+        for u in usuarios_db:
+            st.write(f"👤 {u[0]}")
     
     if arquivo_novo:
         data_corte = st.date_input("Filtrar Novas a partir de:", pd.Timestamp.now().date() - pd.Timedelta(days=15))
@@ -914,10 +931,11 @@ if st.session_state.dados_mercado:
         st.dataframe(df_perf_final.drop(columns=['Tipo', 'Setor']).style.format(formatacao_t1), use_container_width=True, hide_index=True)
 
     with tab_val:
-        st.markdown("#### Métodos Certificados de Valuation")
+        st.markdown("#### Métodos Certificados de Valuation e Indicadores")
         st.markdown("""
         * **Preço Teto Decio Bazin:** Calcula o preço máximo ideal para compra focado em retornos via dividendos.
-        * **Preço Justo Benjamin Graham:** Avalia o valor intrínseco e contábil. Proteção de patrimônio. (Não aplicável a FIIs).
+        * **Preço Justo Benjamin Graham:** Avalia o valor intrínseco e contábil.
+        * **P/L e P/VP:** Indicadores fundamentalistas de preço sobre lucro e patrimônio.
         """)
         
         yd = st.number_input("Taxa de Retorno Mínima Exigida Bazin (%):", value=6.0, step=0.5) / 100.0
@@ -932,6 +950,9 @@ if st.session_state.dados_mercado:
             bz = (float(r["Div. Projetado (R$)"]) / yd) if float(r["Div. Projetado (R$)"]) > 0 else 0.0
             mbz = ((bz / float(r["Cotação Atual"])) - 1) * 100 if bz > 0 else 0.0
             
+            pl_calc = float(r["Cotação Atual"]) / float(r["LPA Projetado"]) if float(r["LPA Projetado"]) > 0 else 0.0
+            pvp_calc = float(r["Cotação Atual"]) / float(r["VPA (Contábil)"]) if float(r["VPA (Contábil)"]) > 0 else 0.0
+            
             if not is_fii:
                 gh = (22.5 * float(r["LPA Projetado"]) * float(r["VPA (Contábil)"])) ** 0.5 if float(r["LPA Projetado"]) > 0 and float(r["VPA (Contábil)"]) > 0 else 0.0
                 mgh = ((gh / float(r["Cotação Atual"])) - 1) * 100 if gh > 0 else 0.0
@@ -939,11 +960,13 @@ if st.session_state.dados_mercado:
                 gh = np.nan
                 mgh = np.nan
                 
-            rv.append({"Ativo": r['Ativo'], "Teto Bazin": bz, "Margem Bazin (%)": mbz, "Justo Graham": gh, "Margem Graham (%)": mgh})
+            rv.append({"Ativo": r['Ativo'], "P/L": pl_calc, "P/VP": pvp_calc, "Teto Bazin": bz, "Margem Bazin (%)": mbz, "Justo Graham": gh, "Margem Graham (%)": mgh})
             
         st.session_state.df_recs_val = pd.DataFrame(rv)
         
         formatacao_t2 = {
+            "P/L": lambda x: f"{x:.2f}" if x > 0 else "-",
+            "P/VP": lambda x: f"{x:.2f}" if x > 0 else "-",
             "Teto Bazin": lambda x: f_brl(x) if x > 0 else "-", 
             "Justo Graham": lambda x: f_brl(x) if pd.notna(x) and x > 0 else "-", 
             "Margem Bazin (%)": lambda x: f_pct(x) if x != 0 else "-", 
@@ -1206,14 +1229,20 @@ if st.session_state.dados_mercado:
                 
                 xls_buffer = to_excel(df_hist_f, sheet_name="Livro_Razao")
                 st.download_button(label="📥 Baixar Livro-Razão (Excel)", data=xls_buffer, file_name=f"Livro_Razao_{st.session_state.username}.xlsx", mime="application/vnd.ms-excel", use_container_width=True)
+                
+                # --- NOVO: GRÁFICO DE DIVIDENDOS HISTÓRICOS ---
+                st.markdown("#### 📈 Gráfico de Recebimentos por Mês")
+                df_chart = df_hist_f.copy()
+                df_chart['Mês/Ano'] = pd.to_datetime(df_chart['Data Ex']).dt.to_period('M').astype(str)
+                df_chart_g = df_chart.groupby('Mês/Ano')['Valor Recebido (R$)'].sum().reset_index()
+                df_chart_g = df_chart_g.sort_values('Mês/Ano')
+                
+                fig_divs = px.bar(df_chart_g, x='Mês/Ano', y='Valor Recebido (R$)', text='Valor Recebido (R$)', title="Histórico Consolidado de Proventos", color_discrete_sequence=['#00a896'])
+                fig_divs.update_traces(texttemplate='R$ %{text:,.2f}', textposition='outside')
+                st.plotly_chart(fig_divs, use_container_width=True)
         else:
             st.info("Nenhum histórico de proventos registrado no Livro-Razão. Conecte ao mercado para iniciar o rastreamento.")
-
-else:
-    for tb in [tab_visao, tab_val, tab_radar, tab_graf, tab_prov]:
-        with tb: 
-            st.info("ℹ️ Adicione ativos na tabela de Controle Manual ou via upload de planilha na barra lateral. Depois, clique em **Conectar ao Mercado Vivo** para preencher essas abas.")
-
+            
 # ==========================================
 # 8. ABAS ISOLADAS (SEMPRE ATIVAS)
 # ==========================================
@@ -1270,11 +1299,7 @@ with tab_tesouro:
             st.error(f"Erro ao processar planilha: {e}")
 
     if st.session_state.df_tesouro.empty:
-        st.session_state.df_tesouro = pd.DataFrame([{
-            "Título": "Tesouro IPCA+ 2035", "Data Compra": pd.Timestamp.now().date(),
-            "Valor Investido (R$)": 1000.0, "Tipo Taxa": "Pós-fixado (IPCA+)", 
-            "Taxa Contratada (%)": 6.50, "Ano Vencimento": 2035
-        }])
+        st.session_state.df_tesouro = pd.DataFrame(columns=colunas_padrao)
 
     df_calc = st.session_state.df_tesouro.copy()
     for c in colunas_padrao:
