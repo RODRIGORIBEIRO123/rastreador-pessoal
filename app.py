@@ -602,21 +602,9 @@ with st.sidebar:
     if st.button("Sincronizar no Banco de Dados", type="primary", use_container_width=True):
         salvar_dados_completos_db(st.session_state.username)
         st.success("Dados blindados no banco com sucesso!")
-        
-    st.divider()
-    
-    st.markdown("### 1. Integrar Notas B3 (Opcional)")
-    st.info("Faça o upload de planilhas para substituir toda a base ou apenas integrar novas operações à carteira atual.")
-    
-    arquivo_principal = st.file_uploader("Substituir Base Completa (B3 / CSV Backup)", type=["xlsx", "csv"])
-    arquivo_novo = st.file_uploader("Integrar Novas Operações", type=["xlsx", "csv"])
 
-    if st.button("💾 Salvar no Banco de Dados", type="primary", use_container_width=True):
-        salvar_dados_completos_db(st.session_state.username)
-        st.success("Dados blindados no banco com sucesso!")
-        
-    # --- NOVO: PAINEL DE CONTROLE ADMIN ---
-    if st.session_state.username.strip().lower() == "Rodrigo":
+    # --- NOVO: PAINEL ADMIN PROTEGIDO (Só aparece para Rodrigo) ---
+    if st.session_state.username.strip().lower() == "rodrigo":
         st.divider()
         st.markdown("### 👑 Painel Admin")
         if st.button("Ver Relatório de Usuários", use_container_width=True):
@@ -628,6 +616,14 @@ with st.sidebar:
             st.info(f"**Total de Contas Registradas:** {len(usuarios_db)}")
             for u in usuarios_db:
                 st.write(f"👤 {u[0]}")
+        
+    st.divider()
+    
+    st.markdown("### 1. Integrar Notas B3 (Opcional)")
+    st.info("Faça o upload de planilhas para substituir toda a base ou apenas integrar novas operações à carteira atual.")
+    
+    arquivo_principal = st.file_uploader("Substituir Base Completa (B3 / CSV Backup)", type=["xlsx", "csv"])
+    arquivo_novo = st.file_uploader("Integrar Novas Operações", type=["xlsx", "csv"])
     
     if arquivo_novo:
         data_corte = st.date_input("Filtrar Novas a partir de:", pd.Timestamp.now().date() - pd.Timedelta(days=15))
@@ -684,7 +680,6 @@ with st.sidebar:
         st.session_state.df_base = base_atual
         st.warning("Memória atualizada. Lembre-se de salvar no DB.")
         st.rerun()
-
 # ==========================================
 # 6. PAINEL MACRO E CONTROLE MANUAL DE ATIVOS
 # ==========================================
