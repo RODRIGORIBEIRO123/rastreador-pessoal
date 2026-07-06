@@ -1032,7 +1032,6 @@ with tab_radar:
         
         st.dataframe(df_radar[['Ativo', 'Tipo', 'Preço Atual', 'Teto Bazin', 'Margem Bazin (%)', 'Status Bazin', 'Justo Graham', 'Margem Graham (%)', 'Status Graham']].style.format(formatacao_t2 | {"Preço Atual": f_brl}), use_container_width=True, hide_index=True)
 
-        # --- CORREÇÃO DA BOLA DE NEVE (GRÁFICO COM ORDENAÇÃO E TOTAIS NO TOPO) ---
         st.markdown("##### ❄️ Projeção Bola de Neve (1 Ano)")
         saldo_dinamico = df_perf_final['Saldo Atual'].sum() + patr_fora
         b_div = st.session_state.df_simul['Div. Projetado (R$)'].sum() / 12 if not st.session_state.df_simul.empty else 0.0
@@ -1072,6 +1071,93 @@ with tab_radar:
         
         st.plotly_chart(fig_proj, use_container_width=True)
 
+    with tab_graf:
+        st.markdown("#### Gráficos de Distribuição Patrimonial")
+        cg1, cg2 = st.columns(2)
+        
+        paleta = ['#003f5c', '#2f4b7c', '#665191', '#a05195', '#d45087', '#f95d6a', '#ff7c43', '#ffa600']
+        
+        cg1.plotly_chart(px.pie(df_perf_final, values='Saldo Atual', names='Ativo', title="Por Ativo", color_discrete_sequence=paleta), use_container_width=True)
+        cg2.plotly_chart(px.pie(df_perf_final, values='Saldo Atual', names='Tipo', title="Por Classe Operacional", color_discrete_sequence=['#1f4e78', '#00a896']), use_container_width=True)
+        
+        st.markdown("---")
+        st.markdown("#### 📊 Comparativo Histórico e Indexadores")
+        
+        ativos_disponiveis = sorted(df_perf_final['Ativo'].unique().tolist())
+        c_f_g1, c_f_g2 = st.columns(2)
+        
+        atv_sel = c_f_g1.multiselect("Comparar Ativos Específicos:", options=ativos_disponiveis, default=ativos_disponiveis[:5] if len(ativos_disponiveis) >= 5 else ativos_disponiveis)
+        ind_sel = c_f_g2.multiselect("Comparar com os Indexadores:", ['CDI', 'IPCA'], default=['CDI', 'IPCA'])
+        
+        janela = st.radio("Período de Análise:", ["Desde a Data de Compra (Automático)", "Definir Período Customizado (Manual)"], horizontal=True)
+        
+        if janela == "Desde a Data de Compra (Automático)":
+            if atv_sel:
+                df_comp = df_perf_final[df_perf_final['Ativo'].isin(atv_sel)][['Ativo', 'Evolução c/ Div (%)', 'CDI Acum. (%)', 'IPCA Acum. (%)']].copy()
+                df_comp = df_comp.rename(columns={'Evolução c/ Div (%)': 'Carteira (c/ Div)', 'CDI Acum. (%)': 'CDI', 'IPCA Acum. (%)': 'IPCA'})
+                
+                colunas_manter = ['Ativo', 'Carteira (c/ Div)'] + [ind for ind in ind_sel]
+                df_comp = df_comp[colunas_manter]
+                df_melt = df_comp.melt(id_vars='Ativo', var_name='Indicador', value_name='Rentabilidade (%)')
+                
+                fig_comp = px.bar(
+                    df_melt, x='Ativo', y='Rentabilidade (%)', color='Indicador', barmode='group',
+                    color_discrete_map={'Carteira (c/ Div)': '#003f5c', 'CDI': '#00a896', 'IPCA': '#f4a261'},
+                    title="Rentabilidade Acumulada no Tempo de Posse"
+                )
+                st.plotly_chart(fig_comp, use_container_width=True)
+            else:
+                st.warning("Selecione ao menos um ativo para visualizar o gráfico.")
+        else:
+            c_dt1, c_dt2 = st.columns(2)
+            dt_ini = c_dt1.date_input("De:", pd.Timestamp.now().date() - pd.Timedelta(days=365))
+            dt_fim = c_dt2.date_input("Até:", pd.Timestamp.now().date())
+            
+            if st.button("Gerar Gráfico Comparativo", use_container_width=True):
+                if atv_sel:
+                    with st.spinner("Calculando série histórica..."):
+                        cdi_m, ipca_m = 0.0, 0.0
+                        if not df_macro.empty:
+                            try:
+                                f_m = df_macro.loc[dt_ini:dt_fim]
+                                cdi_m = ((1 + f_m['CDI'].dropna()).prod() - 1) * 100
+                                ipca_m = ((1 + f_m['IPCA'].dropna()).prod() - 1) * 100
+                            except: pass
+                            
+                        l_res = []
+                        for t in atv_sel:
+                            r_atv = 0.0
+                            try:
+                                ht = yf.Ticker(f"{t}.SA").history(start=dt_ini, end=dt_fim)
+                                if not ht.empty and len(ht) >= 2:
+                                    p_i = ht['Close'].iloc[0]
+                                    p_f = ht['Close'].iloc[-1]
+                                    d_p = 0.0
+                                    try:
+                                        al_d = yf.Ticker(f"{t}.SA").dividends
+                                        if not al_d.empty:
+                                            if al_d.index.tz is not None: al_d.index = al_d.index.tz_localize(None)
+                                            d_p = al_d[(al_d.index >= pd.Timestamp(dt_ini)) & (al_d.index <= pd.Timestamp(dt_fim))].sum()
+                                    except: pass
+                                    r_atv = ((p_f + d_p) / p_i - 1) * 100
+                            except: pass
+                            
+                            it_m = {'Ativo': t, 'Carteira (c/ Div)': r_atv}
+                            if 'CDI' in ind_sel: it_m['CDI'] = cdi_m
+                            if 'IPCA' in ind_sel: it_m['IPCA'] = ipca_m
+                            l_res.append(it_m)
+                        
+                        df_m_plot = pd.DataFrame(l_res)
+                        if not df_m_plot.empty:
+                            df_melt_m = df_m_plot.melt(id_vars='Ativo', var_name='Indicador', value_name='Rentabilidade (%)')
+                            fig_comp_m = px.bar(
+                                df_melt_m, x='Ativo', y='Rentabilidade (%)', color='Indicador', barmode='group',
+                                color_discrete_map={'Carteira (c/ Div)': '#003f5c', 'CDI': '#00a896', 'IPCA': '#f4a261'},
+                                title=f"Desempenho Customizado de {dt_ini.strftime('%d/%m/%Y')} até {dt_fim.strftime('%d/%m/%Y')}"
+                            )
+                            st.plotly_chart(fig_comp_m, use_container_width=True)
+                else:
+                    st.warning("Selecione ao menos um ativo para visualizar o gráfico.")
     with tab_graf:
         st.markdown("#### Gráficos de Distribuição Patrimonial")
         cg1, cg2 = st.columns(2)
