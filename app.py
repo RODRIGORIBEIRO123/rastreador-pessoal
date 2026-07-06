@@ -687,16 +687,17 @@ with c_op1:
 
 with c_op2:
     nt = st.text_input("Novo Aporte ou Ativo Manual (Ticker)")
-    cq, cp = st.columns(2)
+    cq, cp, cd = st.columns([1, 1, 1.2]) # Ajustado para acomodar 3 colunas lado a lado
     nq = cq.number_input("Quantidade", min_value=1)
-    np_v = cp.number_input("Preço Médio (R$)", min_value=0.01)
+    np_v = cp.number_input("Preço Unitário (R$)", min_value=0.01)
+    nd_v = cd.date_input("Data da Operação", value=pd.Timestamp.now().date())
     
     if st.button("Adicionar à Carteira / Integrar", use_container_width=True) and nt:
         nova_linha = pd.DataFrame([{
-            "Ativo": nt.upper(), 
+            "Ativo": nt.upper().strip(), 
             "Quantidade": float(nq), 
             "Preço Médio": float(np_v), 
-            "Data Média": pd.Timestamp.now().date()
+            "Data Média": nd_v # Agora o sistema usa a data exata escolhida por você
         }])
         st.session_state.df_base = consolidar_carteira(pd.concat([st.session_state.df_base, nova_linha], ignore_index=True))
         st.rerun()
