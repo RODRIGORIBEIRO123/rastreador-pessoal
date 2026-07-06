@@ -1274,30 +1274,19 @@ with tab_tesouro:
     for c in colunas_padrao:
         if c not in df_calc.columns: df_calc[c] = None
 
-    valores_futuros = []
-    ipca_proj = ipca_12m_hoje if ipca_12m_hoje > 0 else 4.0
-    ano_atual_calc = pd.Timestamp.now().year
+   df_calc['Valor Futuro no Vencimento'] = valores_futuros
+    
+    # --- CORREÇÃO CIRÚRGICA: FORÇAR TIPAGEM PARA PERMITIR ORDENAÇÃO NATIVA POR CLIQUE ---
+    df_calc['Valor Investido (R$)'] = pd.to_numeric(df_calc['Valor Investido (R$)'], errors='coerce').fillna(0.0)
+    df_calc['Taxa Contratada (%)'] = pd.to_numeric(df_calc['Taxa Contratada (%)'], errors='coerce').fillna(0.0)
+    df_calc['Ano Vencimento'] = pd.to_numeric(df_calc['Ano Vencimento'], errors='coerce').fillna(2030).astype(int)
+    df_calc['Valor Futuro no Vencimento'] = pd.to_numeric(df_calc['Valor Futuro no Vencimento'], errors='coerce').fillna(0.0)
 
-    for _, row in df_calc.iterrows():
-        try:
-            inv = float(limpar_numero(row.get('Valor Investido (R$)', 0)))
-            tx = float(limpar_numero(row.get('Taxa Contratada (%)', 0)))
-            venc = int(limpar_numero(row.get('Ano Vencimento', ano_atual_calc + 1)))
-            anos = max(1, venc - ano_atual_calc)
-            
-            if str(row.get('Tipo Taxa')).strip() == "Pós-fixado (IPCA+)":
-                tx += ipca_proj
-                
-            vf = inv * ((1 + (tx/100)) ** anos)
-            valores_futuros.append(vf)
-        except:
-            valores_futuros.append(0.0)
-
-    df_calc['Valor Futuro no Vencimento'] = valores_futuros
+    st.session_state.df_tesouro = df_calc
 
     st.markdown("#### 📝 Lançamentos e Projeções (Tabela Interativa)")
     
-    # Tabela Única
+    # Tabela Única com ordenação nativa liberada
     df_editado = st.data_editor(
         df_calc,
         num_rows="dynamic",
@@ -1365,15 +1354,19 @@ with tab_ia:
         
         with st.chat_message("assistant"):
             with st.spinner("Analisando cruzamentos de dados e o cenário macroeconômico..."):
-                ctx_c = str(st.session_state.dados_mercado) if st.session_state.dados_mercado else "O usuário não conectou a carteira no momento."
+                ctx_c = str(st.session_state.dados_mercado) if st.session_state.dados_mercado else "O usuário não conectou a carteira B3 no momento."
+                
+                # --- CORREÇÃO CIRÚRGICA: INJETANDO TESOURO DIRETO NO CONTEXTO DA IA ---
+                ctx_t = st.session_state.df_tesouro.to_dict(orient='records') if isinstance(st.session_state.df_tesouro, pd.DataFrame) and not st.session_state.df_tesouro.empty else "Sem títulos no Tesouro."
+                
                 ctx_m = f"Selic Vigente: {f_pct(selic_hoje)}|IPCA Atual 12m: {f_pct(ipca_12m_hoje)}. Projeções Focus para {ano_atual}: Selic {f_pct(proj_focus.get(f'Selic_{ano_atual}'))}/IPCA {f_pct(proj_focus.get(f'IPCA_{ano_atual}'))}"
                 
                 h_txt = "\n".join([f"{'Usuário' if h['role']=='user' else 'Gestora IA'}: {h['content']}" for h in st.session_state.historico_chat[-6:-1]])
                 
                 sys_p = (
-                    f"Você é um Analista CNPI Sênior de alta performance. [Carteira do Cliente]: {ctx_c}. [Cenário Macro]: {ctx_m}.\n"
+                    f"Você é um Analista CNPI Sênior de alta performance. [Carteira B3 (Ações/FIIs)]: {ctx_c}. [Carteira Tesouro Direto]: {ctx_t}. [Cenário Macro]: {ctx_m}.\n"
                     f"DIRETRIZ DE CONTINUIDADE: Use o HISTÓRICO RECENTE abaixo para não perder o fio da conversa com o cliente.\n"
-                    f"REGRA ESTRITA E IMUTÁVEL DE ESCOPO: 1) Se o usuário usar a palavra 'carteira', 'meus ativos' ou nomes explícitos contidos na [Carteira do Cliente], analise profundamente o portfólio dele de forma consultiva e executiva. 2) Se a pergunta for neutra ou não citar ativos dele, VOCÊ DEVE IGNORAR TOTALMENTE a carteira e responder apenas tecnicamente sobre a dúvida.\n"
+                    f"REGRA ESTRITA E IMUTÁVEL DE ESCOPO: 1) Se o usuário usar a palavra 'carteira', 'meus ativos' ou nomes explícitos contidos nas carteiras B3 ou Tesouro, analise profundamente o portfólio dele de forma consultiva e executiva reunindo todas as classes de ativos. 2) Se a pergunta for neutra ou não citar ativos dele, VOCÊ DEVE IGNORAR TOTALMENTE as carteiras e responder apenas tecnicamente sobre a dúvida.\n"
                     f"=== HISTÓRICO DA CONVERSA ===\n{h_txt}"
                 )
                 
