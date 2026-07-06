@@ -1200,206 +1200,92 @@ else:
 # ==========================================
 # 8. ABAS ISOLADAS (SEMPRE ATIVAS)
 # ==========================================
-with tab_tesouro:
-    st.markdown("### 🏛️ Simulador e Controle de Tesouro Direto")
-    st.info("Faça o upload do seu extrato do Tesouro (CSV/Excel) ou insira os dados manualmente. O Valor Futuro é calculado na mesma tabela.")
-    
-    arq_tesouro = st.file_uploader("Upload da Planilha do Tesouro Direto", type=["xlsx", "csv"], key="up_tesouro")
-    
-    colunas_padrao = ["Título", "Data Compra", "Valor Investido (R$)", "Tipo Taxa", "Taxa Contratada (%)", "Ano Vencimento"]
-    
-    if arq_tesouro:
-        try:
-            if arq_tesouro.name.endswith('.csv'):
-                txt_tes = arq_tesouro.getvalue().decode('utf-8-sig', errors='ignore')
-                sep_tes = ',' if txt_tes.count(',') > txt_tes.count(';') else ';'
-                df_up_tes = pd.read_csv(io.StringIO(txt_tes), sep=sep_tes)
-            else:
-                df_up_tes = pd.read_excel(arq_tesouro)
-            
-            mapeamento_tes = {}
-            for col in df_up_tes.columns:
-                c_up = str(col).strip().upper()
-                if 'TÍTULO' in c_up or 'TITULO' in c_up: mapeamento_tes[col] = 'Título'
-                elif 'OPERAÇÃO' in c_up or 'COMPRA' in c_up: mapeamento_tes[col] = 'Data Compra'
-                elif 'BRUTO' in c_up or 'INVEST' in c_up: mapeamento_tes[col] = 'Valor Investido (R$)'
-                elif 'VENCIMENTO' in c_up or 'ANO' in c_up: mapeamento_tes[col] = 'Ano Vencimento'
-                elif 'RENTABILIDADE' in c_up or 'TAXA' in c_up: mapeamento_tes[col] = 'Rentabilidade_Raw'
-            
-            df_up_tes = df_up_tes.rename(columns=mapeamento_tes)
-            
-            if 'Rentabilidade_Raw' in df_up_tes.columns:
-                tipos, taxas = [], []
-                for val in df_up_tes['Rentabilidade_Raw'].astype(str):
-                    is_ipca = "IPCA" in val.upper()
-                    tipos.append("Pós-fixado (IPCA+)" if is_ipca else "Pré-fixado")
-                    val_num = val.replace(',', '.')
-                    nums = re.findall(r'\d+\.\d+|\d+', val_num)
-                    taxas.append(float(nums[-1]) if nums else 0.0)
-                    
-                df_up_tes['Tipo Taxa'] = tipos
-                df_up_tes['Taxa Contratada (%)'] = taxas
-
-            for c in colunas_padrao:
-                if c not in df_up_tes.columns: df_up_tes[c] = None
-            
-            df_up_tes['Data Compra'] = pd.to_datetime(df_up_tes['Data Compra'], errors='coerce').dt.date
-            df_up_tes['Valor Investido (R$)'] = df_up_tes['Valor Investido (R$)'].apply(limpar_numero)
-            df_up_tes['Ano Vencimento'] = df_up_tes['Ano Vencimento'].apply(limpar_numero).astype(int)
-            
-            st.session_state.df_tesouro = df_up_tes[colunas_padrao]
-            st.success("Planilha do Tesouro importada com sucesso!")
-        except Exception as e:
-            st.error(f"Erro ao processar planilha: {e}")
-
-    if st.session_state.df_tesouro.empty:
-        st.session_state.df_tesouro = pd.DataFrame([{
-            "Título": "Tesouro IPCA+ 2035", "Data Compra": pd.Timestamp.now().date(),
-            "Valor Investido (R$)": 1000.0, "Tipo Taxa": "Pós-fixado (IPCA+)", 
-            "Taxa Contratada (%)": 6.50, "Ano Vencimento": 2035
-        }])
-
-    df_calc = st.session_state.df_tesouro.copy()
-    for c in colunas_padrao:
-        if c not in df_calc.columns: df_calc[c] = None
-
-    valores_futuros = []
-    ipca_proj = ipca_12m_hoje if ipca_12m_hoje > 0 else 4.0
-    ano_atual_calc = pd.Timestamp.now().year
-
-    for _, row in df_calc.iterrows():
-        try:
-            inv = float(limpar_numero(row.get('Valor Investido (R$)', 0)))
-            tx = float(limpar_numero(row.get('Taxa Contratada (%)', 0)))
-            venc = int(limpar_numero(row.get('Ano Vencimento', ano_atual_calc + 1)))
-            anos = max(1, venc - ano_atual_calc)
-            
-            if str(row.get('Tipo Taxa')).strip() == "Pós-fixado (IPCA+)":
-                tx += ipca_proj
-                
-            vf = inv * ((1 + (tx/100)) ** anos)
-            valores_futuros.append(vf)
-        except:
-            valores_futuros.append(0.0)
-
-    df_calc['Valor Futuro no Vencimento'] = valores_futuros
-    
-    # --- TIPAGEM FORÇADA PARA HABILITAR A ORDENAÇÃO NATIVA (CLICK) NO CABEÇALHO ---
-    df_calc['Valor Investido (R$)'] = pd.to_numeric(df_calc['Valor Investido (R$)'], errors='coerce').fillna(0.0)
-    df_calc['Taxa Contratada (%)'] = pd.to_numeric(df_calc['Taxa Contratada (%)'], errors='coerce').fillna(0.0)
-    df_calc['Ano Vencimento'] = pd.to_numeric(df_calc['Ano Vencimento'], errors='coerce').fillna(ano_atual_calc).astype(int)
-    df_calc['Valor Futuro no Vencimento'] = pd.to_numeric(df_calc['Valor Futuro no Vencimento'], errors='coerce').fillna(0.0)
-
-    st.session_state.df_tesouro = df_calc
-
-    st.markdown("#### 📝 Lançamentos e Projeções (Tabela Interativa)")
-    
-    df_editado = st.data_editor(
-        df_calc,
-        num_rows="dynamic",
-        use_container_width=True,
-        hide_index=True,
-        column_order=["Título", "Data Compra", "Valor Investido (R$)", "Tipo Taxa", "Taxa Contratada (%)", "Ano Vencimento", "Valor Futuro no Vencimento"],
-        column_config={
-            "Tipo Taxa": st.column_config.SelectboxColumn("Tipo Taxa", options=["Pré-fixado", "Pós-fixado (IPCA+)"], required=True),
-            "Data Compra": st.column_config.DateColumn("Data Compra"),
-            "Ano Vencimento": st.column_config.NumberColumn("Ano Venc.", format="%d"),
-            "Valor Investido (R$)": st.column_config.NumberColumn("Valor Investido (R$)", format="%.2f"),
-            "Taxa Contratada (%)": st.column_config.NumberColumn("Taxa Contratada (%)", format="%.2f"),
-            "Valor Futuro no Vencimento": st.column_config.NumberColumn("Valor Futuro Projetado", disabled=True, format="R$ %.2f")
-        }
-    )
-    
-    if st.button("🔄 Recalcular / Salvar Edições Manuais", type="primary"):
-        st.session_state.df_tesouro = df_editado[colunas_padrao]
-        st.rerun()
-
-    if not df_calc.empty:
-        tot_investido = df_calc['Valor Investido (R$)'].sum()
-        tot_projetado = df_calc['Valor Futuro no Vencimento'].sum()
-        lucro_projetado = tot_projetado - tot_investido
-        
-        st.markdown("---")
-        st.markdown("#### 📊 Resumo do Tesouro Direto")
-        c_tot1, c_tot2, c_tot3 = st.columns(3)
-        c_tot1.metric("Total Investido", f_brl(tot_investido))
-        c_tot2.metric("Valor Futuro Projetado", f_brl(tot_projetado))
-        margem_lucro = f_pct((tot_projetado / tot_investido - 1) * 100) if tot_investido > 0 else "0.00%"
-        c_tot3.metric("Lucro Bruto Projetado", f_brl(lucro_projetado), margem_lucro)
-
 with tab_ia:
-    st.markdown("### 💬 Comitê de IA Sênior")
-    cb1, cb2 = st.columns(2)
-    
-    if cb1.button("🗑️ Limpar Chat e Iniciar Nova Sessão", use_container_width=True):
-        st.session_state.historico_chat = [{"role": "assistant", "content": f"Saudações, {st.session_state.username}. O terminal foi limpo."}]
-        st.rerun()
+        st.markdown("### 💬 Comitê de IA Sênior")
+        cb1, cb2 = st.columns(2)
         
-    if HAS_DOCX and len(st.session_state.historico_chat) > 1:
-        doc_buffer = export_docx(st.session_state.historico_chat)
-        cb2.download_button("📄 Exportar Conversa de IA em Documento (Word)", data=doc_buffer, file_name=f"Parecer_IA_{st.session_state.username}.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", use_container_width=True)
-    elif not HAS_DOCX: 
-        cb2.caption("⚠️ Instale a biblioteca 'python-docx' no seu arquivo requirements.txt para habilitar o botão de exportação em Word.")
+        if cb1.button("🗑️ Limpar Chat e Iniciar Nova Sessão", use_container_width=True):
+            st.session_state.historico_chat = [{"role": "assistant", "content": f"Saudações, {st.session_state.username}. O terminal foi limpo."}]
+            st.rerun()
+            
+        if HAS_DOCX and len(st.session_state.historico_chat) > 1:
+            doc_buffer = export_docx(st.session_state.historico_chat)
+            cb2.download_button("📄 Exportar Conversa de IA em Documento (Word)", data=doc_buffer, file_name=f"Parecer_IA_{st.session_state.username}.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", use_container_width=True)
+        elif not HAS_DOCX: 
+            cb2.caption("⚠️ Instale a biblioteca 'python-docx' no seu arquivo requirements.txt para habilitar o botão de exportação em Word.")
 
-    api_key_secreta = st.secrets.get("GEMINI_API_KEY", "")
-    if not api_key_secreta: 
-        api_key_secreta = st.text_input("Insira sua Gemini API Key (Apenas uma vez):", type="password")
-        
-    for m in st.session_state.historico_chat:
-        with st.chat_message(m["role"]): 
-            st.write(m["content"])
-        
-    if prompt := st.chat_input("Ex: 'A BBAS3 está sendo negociada com desconto?' ou 'Qual sua avaliação da minha carteira?'"):
-        with st.chat_message("user"): 
-            st.write(prompt)
+        api_key_secreta = st.secrets.get("GEMINI_API_KEY", "")
+        if not api_key_secreta: 
+            api_key_secreta = st.text_input("Insira sua Gemini API Key (Apenas uma vez):", type="password")
             
-        st.session_state.historico_chat.append({"role": "user", "content": prompt})
-        
-        with st.chat_message("assistant"):
-            with st.spinner("Analisando cruzamentos de dados e o cenário macroeconômico..."):
-                ctx_c = str(st.session_state.dados_mercado) if st.session_state.dados_mercado else "O usuário não conectou a carteira B3 no momento."
+        for m in st.session_state.historico_chat:
+            with st.chat_message(m["role"]): 
+                st.write(m["content"])
+            
+        if prompt := st.chat_input("Ex: 'A BBAS3 está sendo negociada com desconto?' ou 'Qual sua avaliação da minha carteira?'"):
+            with st.chat_message("user"): 
+                st.write(prompt)
                 
-                # --- NOVO CONTEXTO: IA AGORA ENXERGA O TESOURO DIRETO ---
-                ctx_t = st.session_state.df_tesouro.to_dict(orient='records') if isinstance(st.session_state.df_tesouro, pd.DataFrame) and not st.session_state.df_tesouro.empty else "Sem títulos no Tesouro."
-                
-                ctx_m = f"Selic Vigente: {f_pct(selic_hoje)}|IPCA Atual 12m: {f_pct(ipca_12m_hoje)}. Projeções Focus para {ano_atual}: Selic {f_pct(proj_focus.get(f'Selic_{ano_atual}'))}/IPCA {f_pct(proj_focus.get(f'IPCA_{ano_atual}'))}"
-                
-                h_txt = "\n".join([f"{'Usuário' if h['role']=='user' else 'Gestora IA'}: {h['content']}" for h in st.session_state.historico_chat[-6:-1]])
-                
-                sys_p = (
-                    f"Você é um Analista CNPI Sênior de alta performance. [Carteira B3 (Ações/FIIs)]: {ctx_c}. [Carteira Tesouro Direto]: {ctx_t}. [Cenário Macro]: {ctx_m}.\n"
-                    f"DIRETRIZ DE CONTINUIDADE: Use o HISTÓRICO RECENTE abaixo para não perder o fio da conversa com o cliente.\n"
-                    f"REGRA ESTRITA E IMUTÁVEL DE ESCOPO: 1) Se o usuário usar a palavra 'carteira', 'meus ativos' ou nomes explícitos contidos nas carteiras B3 ou Tesouro, analise profundamente o portfólio dele de forma consultiva e executiva reunindo todas as classes de ativos. 2) Se a pergunta for neutra ou não citar ativos dele, VOCÊ DEVE IGNORAR TOTALMENTE as carteiras e responder apenas tecnicamente sobre a dúvida.\n"
-                    f"=== HISTÓRICO DA CONVERSA ===\n{h_txt}"
-                )
-                
-                resposta_ia = "⚠️ Chave API da IA ausente ou incorreta."
-                if api_key_secreta:
+            st.session_state.historico_chat.append({"role": "user", "content": prompt})
+            
+            with st.chat_message("assistant"):
+                with st.spinner("Analisando cruzamentos de dados e o cenário macroeconômico..."):
+                    
+                    # --- INJEÇÃO DE PRECISÃO: ALIMENTANDO A IA COM TOTAIS JÁ CALCULADOS ---
+                    tot_b3 = df_perf_final['Saldo Atual'].sum() if ('df_perf_final' in locals() and not df_perf_final.empty) else 0.0
                     try:
-                        import google.generativeai as genai
-                        genai.configure(api_key=api_key_secreta)
-                        sucesso_ia = False
-                        erro_log = ""
+                        tot_tes = st.session_state.df_tesouro['Valor Investido (R$)'].apply(limpar_numero).sum() if (isinstance(st.session_state.df_tesouro, pd.DataFrame) and not st.session_state.df_tesouro.empty) else 0.0
+                    except:
+                        tot_tes = 0.0
                         
-                        for mdl in ['gemini-2.5-flash', 'gemini-1.5-flash']:
-                            try:
-                                resposta_ia = genai.GenerativeModel(mdl).generate_content([sys_p, prompt]).text
-                                sucesso_ia = True
-                                break 
-                            except Exception as e_ia: 
-                                erro_log = str(e_ia)
-                                continue
-                                
-                        if not sucesso_ia: 
-                            resposta_ia = f"⚠️ Falha de comunicação de rede com os servidores da IA: {erro_log}"
-                    except Exception as e_motor: 
-                        resposta_ia = f"⚠️ Falta de dependência no servidor (motor genai): {e_motor}"
-                        
-                st.write(resposta_ia)
-                
-        st.session_state.historico_chat.append({"role": "assistant", "content": resposta_ia})
-        
-        if st.session_state.username:
-            salvar_dados_completos_db(st.session_state.username) 
+                    tot_geral = tot_b3 + tot_tes
+                    
+                    ctx_resumo = f"PATRIMÔNIO EXATO (NÃO CALCULE, USE ESSES VALORES CEGAMENTE): Total Consolidado = R$ {tot_geral:,.2f} | B3 (Ações/FIIs) = R$ {tot_b3:,.2f} | Tesouro Direto = R$ {tot_tes:,.2f}."
+                    
+                    ctx_c = str(st.session_state.dados_mercado) if st.session_state.dados_mercado else "O usuário não conectou a carteira B3 no momento."
+                    ctx_t = st.session_state.df_tesouro.to_dict(orient='records') if isinstance(st.session_state.df_tesouro, pd.DataFrame) and not st.session_state.df_tesouro.empty else "Sem títulos no Tesouro."
+                    ctx_m = f"Selic Vigente: {f_pct(selic_hoje)}|IPCA Atual 12m: {f_pct(ipca_12m_hoje)}. Projeções Focus para {ano_atual}: Selic {f_pct(proj_focus.get(f'Selic_{ano_atual}'))}/IPCA {f_pct(proj_focus.get(f'IPCA_{ano_atual}'))}"
+                    
+                    h_txt = "\n".join([f"{'Usuário' if h['role']=='user' else 'Gestora IA'}: {h['content']}" for h in st.session_state.historico_chat[-6:-1]])
+                    
+                    sys_p = (
+                        f"Você é um Analista CNPI Sênior de alta performance. \n"
+                        f"[{ctx_resumo}]\n"
+                        f"[Carteira B3]: {ctx_c}\n"
+                        f"[Carteira Tesouro Direto]: {ctx_t}\n"
+                        f"[Cenário Macro]: {ctx_m}\n\n"
+                        f"DIRETRIZ DE CONTINUIDADE: Use o HISTÓRICO RECENTE abaixo para não perder o fio da conversa com o cliente.\n"
+                        f"REGRA ESTRITA: 1) NUNCA tente somar os valores JSON das carteiras por conta própria, pois LLMs erram na matemática de arrays. Use os totais passados em PATRIMÔNIO EXATO sempre que questionado sobre saldos totais. 2) Foque a sua análise na qualidade dos ativos, setores e estratégia de investimentos baseando-se no cenário macroeconômico atual.\n"
+                        f"=== HISTÓRICO DA CONVERSA ===\n{h_txt}"
+                    )
+                    
+                    resposta_ia = "⚠️ Chave API da IA ausente ou incorreta."
+                    if api_key_secreta:
+                        try:
+                            import google.generativeai as genai
+                            genai.configure(api_key=api_key_secreta)
+                            sucesso_ia = False
+                            erro_log = ""
+                            
+                            for mdl in ['gemini-2.5-flash', 'gemini-1.5-flash']:
+                                try:
+                                    resposta_ia = genai.GenerativeModel(mdl).generate_content([sys_p, prompt]).text
+                                    sucesso_ia = True
+                                    break 
+                                except Exception as e_ia: 
+                                    erro_log = str(e_ia)
+                                    continue
+                                    
+                            if not sucesso_ia: 
+                                resposta_ia = f"⚠️ Falha de comunicação de rede com os servidores da IA: {erro_log}"
+                        except Exception as e_motor: 
+                            resposta_ia = f"⚠️ Falta de dependência no servidor (motor genai): {e_motor}"
+                            
+                    st.write(resposta_ia)
+                    
+            st.session_state.historico_chat.append({"role": "assistant", "content": resposta_ia})
             
-        st.rerun()
+            if st.session_state.username:
+                salvar_dados_completos_db(st.session_state.username) 
+                
+            st.rerun()
