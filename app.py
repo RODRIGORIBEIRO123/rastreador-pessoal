@@ -749,10 +749,18 @@ with c_op3:
         salvar_dados_completos_db(st.session_state.username)
         st.success("Dados blindados no banco com sucesso!")
 
-st.markdown("#### 📝 Tabela Editável (Ajuste Fino de Quantidade e Preço Médio)")
-st.info("Ajuste quantidades ou preços médios diretamente nas células da tabela abaixo antes de conectar aos servidores da B3.")
+st.markdown("#### 📝 Tabela Editável (Ajuste Fino e Resgate Histórico)")
+st.info("Ajuste as quantidades, os preços médios, ou a **Data de Compra** (o robô usará essa data para resgatar todos os dividendos passados a que você tem direito).")
 
-df_editado = st.data_editor(st.session_state.df_base, use_container_width=True, hide_index=True)
+df_editado = st.data_editor(
+    st.session_state.df_base, 
+    use_container_width=True, 
+    hide_index=True,
+    column_config={
+        "Data Média": st.column_config.DateColumn("Data de Compra (Início dos Divs)", format="DD/MM/YYYY"),
+        "Preço Médio": st.column_config.NumberColumn("Preço Médio (R$)", format="%.2f")
+    }
+)
 
 if st.button("🚀 Conectar ao Mercado Vivo", type="primary", use_container_width=True):
     if not df_editado.empty:
