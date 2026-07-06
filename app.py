@@ -146,9 +146,11 @@ def init_db():
     if IS_POSTGRES:
         c.execute('''CREATE TABLE IF NOT EXISTS carteiras (username TEXT, ativo TEXT, quantidade DOUBLE PRECISION, preco_medio DOUBLE PRECISION, data_media TEXT)''')
         c.execute('''CREATE TABLE IF NOT EXISTS tesouro_v2 (username TEXT, titulo TEXT, data_compra TEXT, tipo_taxa TEXT, investido DOUBLE PRECISION, taxa DOUBLE PRECISION, vencimento INTEGER)''')
+        c.execute('''CREATE TABLE IF NOT EXISTS proventos_ledger (username TEXT, ativo TEXT, data_ex TEXT, valor DOUBLE PRECISION)''')
     else:
         c.execute('''CREATE TABLE IF NOT EXISTS carteiras (username TEXT, Ativo TEXT, Quantidade REAL, Preco_Medio REAL, Data_Media TEXT)''')
         c.execute('''CREATE TABLE IF NOT EXISTS tesouro_v2 (username TEXT, titulo TEXT, data_compra TEXT, tipo_taxa TEXT, investido REAL, taxa REAL, vencimento INTEGER)''')
+        c.execute('''CREATE TABLE IF NOT EXISTS proventos_ledger (username TEXT, ativo TEXT, data_ex TEXT, valor REAL)''')
         
     c.execute('''CREATE TABLE IF NOT EXISTS chat_ia (username TEXT, role TEXT, content TEXT)''')
     conn.commit()
@@ -204,7 +206,7 @@ def salvar_dados_completos_db(username):
             c.execute(f"INSERT INTO carteiras (username, ativo, quantidade, preco_medio, data_media) VALUES ({PARAM}, {PARAM}, {PARAM}, {PARAM}, {PARAM})",
                       (usr, str(r.get('Ativo', '')), float(limpar_numero(r.get('Quantidade', 0))), float(limpar_numero(r.get('Preço Médio', 0))), str(r.get('Data Média', ''))))
             
-    # Salvar Tesouro Direto com colunas unificadas
+    # Salvar Tesouro
     c.execute(f"DELETE FROM tesouro_v2 WHERE username={PARAM}", (usr,))
     if isinstance(st.session_state.df_tesouro, pd.DataFrame) and not st.session_state.df_tesouro.empty:
         for _, r in st.session_state.df_tesouro.iterrows():
@@ -213,6 +215,13 @@ def salvar_dados_completos_db(username):
             c.execute(f"INSERT INTO tesouro_v2 (username, titulo, data_compra, tipo_taxa, investido, taxa, vencimento) VALUES ({PARAM}, {PARAM}, {PARAM}, {PARAM}, {PARAM}, {PARAM}, {PARAM})",
                       (usr, str(r.get('Título', 'Tesouro')), str(r.get('Data Compra', '')), str(r.get('Tipo Taxa', 'Pré-fixado')), float(limpar_numero(r.get('Valor Investido (R$)', 0))), float(limpar_numero(r.get('Taxa Contratada (%)', 0))), int(limpar_numero(r.get('Ano Vencimento', 2030)))))
             
+    # --- NOVO: SALVAR LIVRO RAZÃO DE PROVENTOS ---
+    c.execute(f"DELETE FROM proventos_ledger WHERE username={PARAM}", (usr,))
+    if 'df_ledger' in st.session_state and not st.session_state.df_ledger.empty:
+        for _, r in st.session_state.df_ledger.iterrows():
+            c.execute(f"INSERT INTO proventos_ledger (username, ativo, data_ex, valor) VALUES ({PARAM}, {PARAM}, {PARAM}, {PARAM})",
+                      (usr, str(r['Ativo']), str(r['Data Ex']), float(r['Valor Recebido (R$)'])))
+
     # Salvar Chat IA
     c.execute(f"DELETE FROM chat_ia WHERE username={PARAM}", (usr,))
     for msg in st.session_state.historico_chat[-30:]:
@@ -243,6 +252,13 @@ def carregar_dados_completos_db(username):
         df_tes = pd.DataFrame(columns=["Título", "Data Compra", "Tipo Taxa", "Valor Investido (R$)", "Taxa Contratada (%)", "Ano Vencimento", "Valor Futuro no Vencimento"])
         
     st.session_state.df_tesouro = df_tes
+
+    # --- NOVO: CARREGAR LIVRO RAZÃO DE PROVENTOS ---
+    c.execute(f"SELECT ativo, data_ex, valor FROM proventos_ledger WHERE username={PARAM}", (usr,))
+    df_led = pd.DataFrame(c.fetchall(), columns=["Ativo", "Data Ex", "Valor Recebido (R$)"])
+    if not df_led.empty:
+        df_led['Data Ex'] = pd.to_datetime(df_led['Data Ex']).dt.date
+    st.session_state.df_ledger = df_led
     
     c.execute(f"SELECT role, content FROM chat_ia WHERE username={PARAM}", (usr,))
     df_chat = pd.DataFrame(c.fetchall(), columns=["role", "content"])
@@ -729,6 +745,7 @@ if st.button("🚀 Conectar ao Mercado Vivo", type="primary", use_container_widt
         total = len(st.session_state.df_base)
         dm = {}
         sim = []
+        l_novos_prov = [] # Inicializa o rastreador para o Livro-Razão
         
         for i, r in st.session_state.df_base.iterrows():
             t = str(r['Ativo']).upper()
@@ -750,9 +767,19 @@ if st.button("🚀 Conectar ao Mercado Vivo", type="primary", use_container_widt
                 if not dvs.empty:
                     if dvs.index.tz is not None: 
                         dvs.index = dvs.index.tz_localize(None)
-                    d_tot = float(dvs[dvs.index >= dc].sum() * r['Quantidade'])
+                    
+                    dvs_validos = dvs[dvs.index >= pd.Timestamp(dc)]
+                    d_tot = float(dvs_validos.sum() * r['Quantidade'])
                     d_12m = float(dvs[dvs.index >= (pd.Timestamp.now() - pd.DateOffset(years=1))].sum())
                     
+                    # --- NOVO: GERANDO ENTRADAS PARA O LIVRO-RAZÃO ---
+                    for d_idx, val_h in dvs_validos.items():
+                        l_novos_prov.append({
+                            "Ativo": t, 
+                            "Data Ex": d_idx.date(), 
+                            "Valor Recebido (R$)": float(val_h * r['Quantidade'])
+                        })
+                        
                 setor = traduzir_setor(tk.info.get('industry', ''))
             except: 
                 pass
@@ -790,6 +817,17 @@ if st.button("🚀 Conectar ao Mercado Vivo", type="primary", use_container_widt
             })
             
             prg.progress((i + 1) / total)
+            
+        # --- NOVO: SALVAMENTO INTELIGENTE NO LIVRO-RAZÃO ---
+        if l_novos_prov:
+            df_n = pd.DataFrame(l_novos_prov)
+            if 'df_ledger' not in st.session_state or st.session_state.df_ledger.empty:
+                st.session_state.df_ledger = df_n
+            else:
+                # Junta o histórico antigo com o novo e remove duplicatas (mantendo a conta mais nova)
+                df_c = pd.concat([df_n, st.session_state.df_ledger])
+                df_c['Data Ex'] = pd.to_datetime(df_c['Data Ex']).dt.date
+                st.session_state.df_ledger = df_c.drop_duplicates(subset=['Ativo', 'Data Ex'], keep='first')
             
         st.session_state.dados_mercado = dm
         st.session_state.df_simul = pd.DataFrame(sim)
@@ -852,21 +890,19 @@ if st.session_state.dados_mercado:
         ev_a = (saldo_acoes / df_a['Total Investido'].sum() - 1) * 100 if not df_a.empty and df_a['Total Investido'].sum() > 0 else 0
         ev_f = (saldo_fiis / df_f['Total Investido'].sum() - 1) * 100 if not df_f.empty and df_f['Total Investido'].sum() > 0 else 0
 
-        # Puxa o total investido no Tesouro (seguro contra nulos)
         saldo_tesouro = st.session_state.df_tesouro['Valor Investido (R$)'].apply(limpar_numero).sum() if not st.session_state.df_tesouro.empty else 0.0
-        
-        # Consolidação do Patrimônio
         patrimonio_total = saldo_acoes + saldo_fiis + saldo_tesouro
 
-        # Destaque Executivo do Patrimônio Total
         st.success(f"💰 **Patrimônio Total Consolidado (Ações + FIIs + Tesouro):** {f_brl(patrimonio_total)}")
 
-        # Métricas Individuais
         m1, m2, m3, m4 = st.columns(4)
         m1.metric("📈 Patrimônio Ações", f_brl(saldo_acoes), f_pct(ev_a))
         m2.metric("🏢 Patrimônio FIIs", f_brl(saldo_fiis), f_pct(ev_f))
         m3.metric("🏛️ Tesouro Direto", f_brl(saldo_tesouro))
-        m4.metric("💸 Dividendos Históricos", f_brl(df_perf_final['Total Div. (R$)'].sum() if not df_perf_final.empty else 0.0))
+        
+        # --- NOVO: Métrica global que puxa dados imutáveis do Livro-Razão ---
+        tot_divs = st.session_state.df_ledger['Valor Recebido (R$)'].sum() if 'df_ledger' in st.session_state and not st.session_state.df_ledger.empty else df_perf_final['Total Div. (R$)'].sum() if not df_perf_final.empty else 0.0
+        m4.metric("💸 Dividendos Históricos (Globais)", f_brl(tot_divs))
 
         formatacao_t1 = {
             c: f_brl for c in ["Preço Médio", "Preço Atual", "Total Investido", "Saldo Atual", "Saldo C/ Dividendos", "Resultado (R$)", "Resultado C/ Dividendos", "Total Div. (R$)"]
@@ -1150,34 +1186,11 @@ if st.session_state.dados_mercado:
             st.success(f"**💰 Total Estimado de Proventos no Período ({m_map[st.session_state.divs_m]}/{st.session_state.divs_ano}):** {f_brl(tot_mes)}")
             
         st.markdown("---")
-        st.markdown("### 🏛️ Histórico Analítico de Proventos (Todo o Tempo de Posse)")
-        l_hist = []
-        for t_hist, dm_hist in st.session_state.dados_mercado.items():
-            try:
-                divs_h = yf.Ticker(f"{t_hist}.SA").dividends
-                if not divs_h.empty:
-                    if divs_h.index.tz is not None: 
-                        divs_h.index = divs_h.index.tz_localize(None)
-                    divs_fil = divs_h[divs_h.index >= pd.Timestamp(dm_hist['Data'])]
-                    for d_idx, val_h in divs_fil.items():
-                        t_rec = val_h * dm_hist['Qtd']
-                        inv_h = dm_hist['Qtd'] * dm_hist['PM']
-                        yoc_h = (t_rec / inv_h) * 100 if inv_h > 0 else 0
-                        dy_h = (val_h / dm_hist['Preço Atual']) * 100 if dm_hist['Preço Atual'] > 0 else 0
-                        
-                        l_hist.append({
-                            "Data Ex": d_idx.date(), 
-                            "Ativo": t_hist, 
-                            "Unitário (R$)": float(val_h), 
-                            "Quantidade": int(dm_hist['Qtd']), 
-                            "Recebido (R$)": float(t_rec), 
-                            "Yield on Cost (%)": float(yoc_h), 
-                            "DY Atual (%)": float(dy_h)
-                        })
-            except: pass
-            
-        if l_hist:
-            df_hist_tot = pd.DataFrame(l_hist).sort_values("Data Ex", ascending=False)
+        # --- NOVO: TABELA DE LEITURA DO LIVRO RAZÃO IMUTÁVEL ---
+        st.markdown("### 🏛️ Livro-Razão de Proventos (Histórico Permanente)")
+        
+        if 'df_ledger' in st.session_state and not st.session_state.df_ledger.empty:
+            df_hist_tot = st.session_state.df_ledger.sort_values("Data Ex", ascending=False)
             c_h1, c_h2 = st.columns(2)
             atvs_disp = sorted(df_hist_tot['Ativo'].unique().tolist())
             
@@ -1189,15 +1202,18 @@ if st.session_state.dados_mercado:
                 df_hist_f = df_hist_f[(df_hist_f['Data Ex'] >= r_hist[0]) & (df_hist_f['Data Ex'] <= r_hist[1])]
                 
             if not df_hist_f.empty:
-                st.dataframe(df_hist_f.style.format({"Unitário (R$)": f_brl_4, "Recebido (R$)": f_brl, "Yield on Cost (%)": f_pct, "DY Atual (%)": f_pct}), use_container_width=True, hide_index=True)
+                st.dataframe(df_hist_f.style.format({"Valor Recebido (R$)": f_brl}), use_container_width=True, hide_index=True)
                 
-                xls_buffer = to_excel(df_hist_f, sheet_name="Historico_Proventos")
-                st.download_button(label="📥 Baixar Histórico de Proventos em Planilha (Excel)", data=xls_buffer, file_name=f"Historico_Proventos_{st.session_state.username}.xlsx", mime="application/vnd.ms-excel", use_container_width=True)
+                xls_buffer = to_excel(df_hist_f, sheet_name="Livro_Razao")
+                st.download_button(label="📥 Baixar Livro-Razão (Excel)", data=xls_buffer, file_name=f"Livro_Razao_{st.session_state.username}.xlsx", mime="application/vnd.ms-excel", use_container_width=True)
+        else:
+            st.info("Nenhum histórico de proventos registrado no Livro-Razão. Conecte ao mercado para iniciar o rastreamento.")
 
 else:
     for tb in [tab_visao, tab_val, tab_radar, tab_graf, tab_prov]:
         with tb: 
             st.info("ℹ️ Adicione ativos na tabela de Controle Manual ou via upload de planilha na barra lateral. Depois, clique em **Conectar ao Mercado Vivo** para preencher essas abas.")
+
 # ==========================================
 # 8. ABAS ISOLADAS (SEMPRE ATIVAS)
 # ==========================================
@@ -1285,7 +1301,6 @@ with tab_tesouro:
 
     df_calc['Valor Futuro no Vencimento'] = valores_futuros
     
-    # --- TIPAGEM FORÇADA BLINDADA PARA ORDENAÇÃO NATIVA (CLICK) NO CABEÇALHO ---
     df_calc['Valor Investido (R$)'] = df_calc['Valor Investido (R$)'].apply(limpar_numero)
     df_calc['Taxa Contratada (%)'] = df_calc['Taxa Contratada (%)'].apply(limpar_numero)
     df_calc['Ano Vencimento'] = df_calc['Ano Vencimento'].apply(limpar_numero).astype(int)
@@ -1295,7 +1310,7 @@ with tab_tesouro:
 
     st.markdown("#### 📝 Lançamentos e Projeções (Tabela Interativa)")
     
-    df_editado = st.data_editor(
+    df_editado_t = st.data_editor(
         df_calc,
         num_rows="dynamic",
         use_container_width=True,
@@ -1312,7 +1327,7 @@ with tab_tesouro:
     )
     
     if st.button("🔄 Recalcular / Salvar Edições Manuais", type="primary"):
-        st.session_state.df_tesouro = df_editado[colunas_padrao]
+        st.session_state.df_tesouro = df_editado_t[colunas_padrao]
         st.rerun()
 
     if not df_calc.empty:
@@ -1329,91 +1344,90 @@ with tab_tesouro:
         c_tot3.metric("Lucro Bruto Projetado", f_brl(lucro_projetado), margem_lucro)
 
 with tab_ia:
-        st.markdown("### 💬 Comitê de IA Sênior")
-        cb1, cb2 = st.columns(2)
+    st.markdown("### 💬 Comitê de IA Sênior")
+    cb1, cb2 = st.columns(2)
+    
+    if cb1.button("🗑️ Limpar Chat e Iniciar Nova Sessão", use_container_width=True):
+        st.session_state.historico_chat = [{"role": "assistant", "content": f"Saudações, {st.session_state.username}. O terminal foi limpo."}]
+        st.rerun()
         
-        if cb1.button("🗑️ Limpar Chat e Iniciar Nova Sessão", use_container_width=True):
-            st.session_state.historico_chat = [{"role": "assistant", "content": f"Saudações, {st.session_state.username}. O terminal foi limpo."}]
-            st.rerun()
-            
-        if HAS_DOCX and len(st.session_state.historico_chat) > 1:
-            doc_buffer = export_docx(st.session_state.historico_chat)
-            cb2.download_button("📄 Exportar Conversa de IA em Documento (Word)", data=doc_buffer, file_name=f"Parecer_IA_{st.session_state.username}.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", use_container_width=True)
-        elif not HAS_DOCX: 
-            cb2.caption("⚠️ Instale a biblioteca 'python-docx' no seu arquivo requirements.txt para habilitar o botão de exportação em Word.")
+    if HAS_DOCX and len(st.session_state.historico_chat) > 1:
+        doc_buffer = export_docx(st.session_state.historico_chat)
+        cb2.download_button("📄 Exportar Conversa de IA em Documento (Word)", data=doc_buffer, file_name=f"Parecer_IA_{st.session_state.username}.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", use_container_width=True)
+    elif not HAS_DOCX: 
+        cb2.caption("⚠️ Instale a biblioteca 'python-docx' no seu arquivo requirements.txt para habilitar o botão de exportação em Word.")
 
-        api_key_secreta = st.secrets.get("GEMINI_API_KEY", "")
-        if not api_key_secreta: 
-            api_key_secreta = st.text_input("Insira sua Gemini API Key (Apenas uma vez):", type="password")
+    api_key_secreta = st.secrets.get("GEMINI_API_KEY", "")
+    if not api_key_secreta: 
+        api_key_secreta = st.text_input("Insira sua Gemini API Key (Apenas uma vez):", type="password")
+        
+    for m in st.session_state.historico_chat:
+        with st.chat_message(m["role"]): 
+            st.write(m["content"])
+        
+    if prompt := st.chat_input("Ex: 'A BBAS3 está sendo negociada com desconto?' ou 'Qual sua avaliação da minha carteira?'"):
+        with st.chat_message("user"): 
+            st.write(prompt)
             
-        for m in st.session_state.historico_chat:
-            with st.chat_message(m["role"]): 
-                st.write(m["content"])
-            
-        if prompt := st.chat_input("Ex: 'A BBAS3 está sendo negociada com desconto?' ou 'Qual sua avaliação da minha carteira?'"):
-            with st.chat_message("user"): 
-                st.write(prompt)
+        st.session_state.historico_chat.append({"role": "user", "content": prompt})
+        
+        with st.chat_message("assistant"):
+            with st.spinner("Analisando cruzamentos de dados e o cenário macroeconômico..."):
                 
-            st.session_state.historico_chat.append({"role": "user", "content": prompt})
-            
-            with st.chat_message("assistant"):
-                with st.spinner("Analisando cruzamentos de dados e o cenário macroeconômico..."):
+                tot_b3 = df_perf_final['Saldo Atual'].sum() if ('df_perf_final' in locals() and not df_perf_final.empty) else 0.0
+                try:
+                    tot_tes = st.session_state.df_tesouro['Valor Investido (R$)'].apply(limpar_numero).sum() if (isinstance(st.session_state.df_tesouro, pd.DataFrame) and not st.session_state.df_tesouro.empty) else 0.0
+                except:
+                    tot_tes = 0.0
                     
-                    # --- INJEÇÃO DE PRECISÃO: ALIMENTANDO A IA COM TOTAIS JÁ CALCULADOS ---
-                    tot_b3 = df_perf_final['Saldo Atual'].sum() if ('df_perf_final' in locals() and not df_perf_final.empty) else 0.0
+                tot_geral = tot_b3 + tot_tes
+                
+                ctx_resumo = f"PATRIMÔNIO EXATO (NÃO CALCULE, USE ESSES VALORES CEGAMENTE): Total Consolidado = R$ {tot_geral:,.2f} | B3 (Ações/FIIs) = R$ {tot_b3:,.2f} | Tesouro Direto = R$ {tot_tes:,.2f}."
+                
+                ctx_c = str(st.session_state.dados_mercado) if st.session_state.dados_mercado else "O usuário não conectou a carteira B3 no momento."
+                ctx_t = st.session_state.df_tesouro.to_dict(orient='records') if isinstance(st.session_state.df_tesouro, pd.DataFrame) and not st.session_state.df_tesouro.empty else "Sem títulos no Tesouro."
+                ctx_m = f"Selic Vigente: {f_pct(selic_hoje)}|IPCA Atual 12m: {f_pct(ipca_12m_hoje)}. Projeções Focus para {ano_atual}: Selic {f_pct(proj_focus.get(f'Selic_{ano_atual}'))}/IPCA {f_pct(proj_focus.get(f'IPCA_{ano_atual}'))}"
+                
+                h_txt = "\n".join([f"{'Usuário' if h['role']=='user' else 'Gestora IA'}: {h['content']}" for h in st.session_state.historico_chat[-6:-1]])
+                
+                sys_p = (
+                    f"Você é um Analista CNPI Sênior de alta performance. \n"
+                    f"[{ctx_resumo}]\n"
+                    f"[Carteira B3]: {ctx_c}\n"
+                    f"[Carteira Tesouro Direto]: {ctx_t}\n"
+                    f"[Cenário Macro]: {ctx_m}\n\n"
+                    f"DIRETRIZ DE CONTINUIDADE: Use o HISTÓRICO RECENTE abaixo para não perder o fio da conversa com o cliente.\n"
+                    f"REGRA ESTRITA: 1) NUNCA tente somar os valores JSON das carteiras por conta própria, pois LLMs erram na matemática de arrays. Use os totais passados em PATRIMÔNIO EXATO sempre que questionado sobre saldos totais. 2) Foque a sua análise na qualidade dos ativos, setores e estratégia de investimentos baseando-se no cenário macroeconômico atual.\n"
+                    f"=== HISTÓRICO DA CONVERSA ===\n{h_txt}"
+                )
+                
+                resposta_ia = "⚠️ Chave API da IA ausente ou incorreta."
+                if api_key_secreta:
                     try:
-                        tot_tes = st.session_state.df_tesouro['Valor Investido (R$)'].apply(limpar_numero).sum() if (isinstance(st.session_state.df_tesouro, pd.DataFrame) and not st.session_state.df_tesouro.empty) else 0.0
-                    except:
-                        tot_tes = 0.0
+                        import google.generativeai as genai
+                        genai.configure(api_key=api_key_secreta)
+                        sucesso_ia = False
+                        erro_log = ""
                         
-                    tot_geral = tot_b3 + tot_tes
-                    
-                    ctx_resumo = f"PATRIMÔNIO EXATO (NÃO CALCULE, USE ESSES VALORES CEGAMENTE): Total Consolidado = R$ {tot_geral:,.2f} | B3 (Ações/FIIs) = R$ {tot_b3:,.2f} | Tesouro Direto = R$ {tot_tes:,.2f}."
-                    
-                    ctx_c = str(st.session_state.dados_mercado) if st.session_state.dados_mercado else "O usuário não conectou a carteira B3 no momento."
-                    ctx_t = st.session_state.df_tesouro.to_dict(orient='records') if isinstance(st.session_state.df_tesouro, pd.DataFrame) and not st.session_state.df_tesouro.empty else "Sem títulos no Tesouro."
-                    ctx_m = f"Selic Vigente: {f_pct(selic_hoje)}|IPCA Atual 12m: {f_pct(ipca_12m_hoje)}. Projeções Focus para {ano_atual}: Selic {f_pct(proj_focus.get(f'Selic_{ano_atual}'))}/IPCA {f_pct(proj_focus.get(f'IPCA_{ano_atual}'))}"
-                    
-                    h_txt = "\n".join([f"{'Usuário' if h['role']=='user' else 'Gestora IA'}: {h['content']}" for h in st.session_state.historico_chat[-6:-1]])
-                    
-                    sys_p = (
-                        f"Você é um Analista CNPI Sênior de alta performance. \n"
-                        f"[{ctx_resumo}]\n"
-                        f"[Carteira B3]: {ctx_c}\n"
-                        f"[Carteira Tesouro Direto]: {ctx_t}\n"
-                        f"[Cenário Macro]: {ctx_m}\n\n"
-                        f"DIRETRIZ DE CONTINUIDADE: Use o HISTÓRICO RECENTE abaixo para não perder o fio da conversa com o cliente.\n"
-                        f"REGRA ESTRITA: 1) NUNCA tente somar os valores JSON das carteiras por conta própria, pois LLMs erram na matemática de arrays. Use os totais passados em PATRIMÔNIO EXATO sempre que questionado sobre saldos totais. 2) Foque a sua análise na qualidade dos ativos, setores e estratégia de investimentos baseando-se no cenário macroeconômico atual.\n"
-                        f"=== HISTÓRICO DA CONVERSA ===\n{h_txt}"
-                    )
-                    
-                    resposta_ia = "⚠️ Chave API da IA ausente ou incorreta."
-                    if api_key_secreta:
-                        try:
-                            import google.generativeai as genai
-                            genai.configure(api_key=api_key_secreta)
-                            sucesso_ia = False
-                            erro_log = ""
-                            
-                            for mdl in ['gemini-2.5-flash', 'gemini-1.5-flash']:
-                                try:
-                                    resposta_ia = genai.GenerativeModel(mdl).generate_content([sys_p, prompt]).text
-                                    sucesso_ia = True
-                                    break 
-                                except Exception as e_ia: 
-                                    erro_log = str(e_ia)
-                                    continue
-                                    
-                            if not sucesso_ia: 
-                                resposta_ia = f"⚠️ Falha de comunicação de rede com os servidores da IA: {erro_log}"
-                        except Exception as e_motor: 
-                            resposta_ia = f"⚠️ Falta de dependência no servidor (motor genai): {e_motor}"
-                            
-                    st.write(resposta_ia)
-                    
-            st.session_state.historico_chat.append({"role": "assistant", "content": resposta_ia})
-            
-            if st.session_state.username:
-                salvar_dados_completos_db(st.session_state.username) 
+                        for mdl in ['gemini-2.5-flash', 'gemini-1.5-flash']:
+                            try:
+                                resposta_ia = genai.GenerativeModel(mdl).generate_content([sys_p, prompt]).text
+                                sucesso_ia = True
+                                break 
+                            except Exception as e_ia: 
+                                erro_log = str(e_ia)
+                                continue
+                                
+                        if not sucesso_ia: 
+                            resposta_ia = f"⚠️ Falha de comunicação de rede com os servidores da IA: {erro_log}"
+                    except Exception as e_motor: 
+                        resposta_ia = f"⚠️ Falta de dependência no servidor (motor genai): {e_motor}"
+                        
+                st.write(resposta_ia)
                 
-            st.rerun()
+        st.session_state.historico_chat.append({"role": "assistant", "content": resposta_ia})
+        
+        if st.session_state.username:
+            salvar_dados_completos_db(st.session_state.username) 
+            
+        st.rerun()
