@@ -925,7 +925,6 @@ if st.session_state.dados_mercado:
         m2.metric("🏢 Patrimônio FIIs", f_brl(saldo_fiis), f_pct(ev_f))
         m3.metric("🏛️ Tesouro Direto", f_brl(saldo_tesouro))
         
-        # --- NOVO: Métrica global que puxa dados imutáveis do Livro-Razão ---
         tot_divs = st.session_state.df_ledger['Valor Recebido (R$)'].sum() if 'df_ledger' in st.session_state and not st.session_state.df_ledger.empty else df_perf_final['Total Div. (R$)'].sum() if not df_perf_final.empty else 0.0
         m4.metric("💸 Dividendos Históricos (Globais)", f_brl(tot_divs))
 
@@ -982,7 +981,7 @@ if st.session_state.dados_mercado:
         }
         st.dataframe(st.session_state.df_recs_val.style.format(formatacao_t2), use_container_width=True, hide_index=True)
 
-with tab_radar: 
+    with tab_radar: 
         st.markdown("##### Parametrização do Radar Operacional")
         c_p1, c_p2, c_p3, c_p4 = st.columns(4)
         patr_fora = c_p1.number_input("Patrimônio Externo / Caixa (R$):", value=0.0, step=1000.0)
@@ -1254,7 +1253,12 @@ with tab_radar:
                 st.plotly_chart(fig_divs, use_container_width=True)
         else:
             st.info("Nenhum histórico de proventos registrado no Livro-Razão. Conecte ao mercado para iniciar o rastreamento.")
-            
+
+else:
+    for tb in [tab_visao, tab_val, tab_radar, tab_graf, tab_prov]:
+        with tb: 
+            st.info("ℹ️ Adicione ativos na tabela de Controle Manual ou via upload de planilha na barra lateral. Depois, clique em **Conectar ao Mercado Vivo** para preencher essas abas.")
+
 # ==========================================
 # 8. ABAS ISOLADAS (SEMPRE ATIVAS)
 # ==========================================
