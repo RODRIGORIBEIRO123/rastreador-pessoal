@@ -1200,6 +1200,133 @@ else:
 # ==========================================
 # 8. ABAS ISOLADAS (SEMPRE ATIVAS)
 # ==========================================
+with tab_tesouro:
+    st.markdown("### 🏛️ Simulador e Controle de Tesouro Direto")
+    st.info("Faça o upload do seu extrato do Tesouro (CSV/Excel) ou insira os dados manualmente. O Valor Futuro é calculado na mesma tabela.")
+    
+    arq_tesouro = st.file_uploader("Upload da Planilha do Tesouro Direto", type=["xlsx", "csv"], key="up_tesouro")
+    
+    colunas_padrao = ["Título", "Data Compra", "Valor Investido (R$)", "Tipo Taxa", "Taxa Contratada (%)", "Ano Vencimento"]
+    
+    if arq_tesouro:
+        try:
+            if arq_tesouro.name.endswith('.csv'):
+                txt_tes = arq_tesouro.getvalue().decode('utf-8-sig', errors='ignore')
+                sep_tes = ',' if txt_tes.count(',') > txt_tes.count(';') else ';'
+                df_up_tes = pd.read_csv(io.StringIO(txt_tes), sep=sep_tes)
+            else:
+                df_up_tes = pd.read_excel(arq_tesouro)
+            
+            mapeamento_tes = {}
+            for col in df_up_tes.columns:
+                c_up = str(col).strip().upper()
+                if 'TÍTULO' in c_up or 'TITULO' in c_up: mapeamento_tes[col] = 'Título'
+                elif 'OPERAÇÃO' in c_up or 'COMPRA' in c_up: mapeamento_tes[col] = 'Data Compra'
+                elif 'BRUTO' in c_up or 'INVEST' in c_up: mapeamento_tes[col] = 'Valor Investido (R$)'
+                elif 'VENCIMENTO' in c_up or 'ANO' in c_up: mapeamento_tes[col] = 'Ano Vencimento'
+                elif 'RENTABILIDADE' in c_up or 'TAXA' in c_up: mapeamento_tes[col] = 'Rentabilidade_Raw'
+            
+            df_up_tes = df_up_tes.rename(columns=mapeamento_tes)
+            
+            if 'Rentabilidade_Raw' in df_up_tes.columns:
+                tipos, taxas = [], []
+                for val in df_up_tes['Rentabilidade_Raw'].astype(str):
+                    is_ipca = "IPCA" in val.upper()
+                    tipos.append("Pós-fixado (IPCA+)" if is_ipca else "Pré-fixado")
+                    val_num = val.replace(',', '.')
+                    nums = re.findall(r'\d+\.\d+|\d+', val_num)
+                    taxas.append(float(nums[-1]) if nums else 0.0)
+                    
+                df_up_tes['Tipo Taxa'] = tipos
+                df_up_tes['Taxa Contratada (%)'] = taxas
+
+            for c in colunas_padrao:
+                if c not in df_up_tes.columns: df_up_tes[c] = None
+            
+            df_up_tes['Data Compra'] = pd.to_datetime(df_up_tes['Data Compra'], errors='coerce').dt.date
+            df_up_tes['Valor Investido (R$)'] = df_up_tes['Valor Investido (R$)'].apply(limpar_numero)
+            df_up_tes['Ano Vencimento'] = df_up_tes['Ano Vencimento'].apply(limpar_numero).astype(int)
+            
+            st.session_state.df_tesouro = df_up_tes[colunas_padrao]
+            st.success("Planilha do Tesouro importada com sucesso!")
+        except Exception as e:
+            st.error(f"Erro ao processar planilha: {e}")
+
+    if st.session_state.df_tesouro.empty:
+        st.session_state.df_tesouro = pd.DataFrame([{
+            "Título": "Tesouro IPCA+ 2035", "Data Compra": pd.Timestamp.now().date(),
+            "Valor Investido (R$)": 1000.0, "Tipo Taxa": "Pós-fixado (IPCA+)", 
+            "Taxa Contratada (%)": 6.50, "Ano Vencimento": 2035
+        }])
+
+    df_calc = st.session_state.df_tesouro.copy()
+    for c in colunas_padrao:
+        if c not in df_calc.columns: df_calc[c] = None
+
+    valores_futuros = []
+    ipca_proj = ipca_12m_hoje if ipca_12m_hoje > 0 else 4.0
+    ano_atual_calc = pd.Timestamp.now().year
+
+    for _, row in df_calc.iterrows():
+        try:
+            inv = float(limpar_numero(row.get('Valor Investido (R$)', 0)))
+            tx = float(limpar_numero(row.get('Taxa Contratada (%)', 0)))
+            venc = int(limpar_numero(row.get('Ano Vencimento', ano_atual_calc + 1)))
+            anos = max(1, venc - ano_atual_calc)
+            
+            if str(row.get('Tipo Taxa')).strip() == "Pós-fixado (IPCA+)":
+                tx += ipca_proj
+                
+            vf = inv * ((1 + (tx/100)) ** anos)
+            valores_futuros.append(vf)
+        except:
+            valores_futuros.append(0.0)
+
+    df_calc['Valor Futuro no Vencimento'] = valores_futuros
+    
+    # --- TIPAGEM FORÇADA BLINDADA PARA ORDENAÇÃO NATIVA (CLICK) NO CABEÇALHO ---
+    df_calc['Valor Investido (R$)'] = df_calc['Valor Investido (R$)'].apply(limpar_numero)
+    df_calc['Taxa Contratada (%)'] = df_calc['Taxa Contratada (%)'].apply(limpar_numero)
+    df_calc['Ano Vencimento'] = df_calc['Ano Vencimento'].apply(limpar_numero).astype(int)
+    df_calc['Valor Futuro no Vencimento'] = df_calc['Valor Futuro no Vencimento'].apply(limpar_numero)
+
+    st.session_state.df_tesouro = df_calc
+
+    st.markdown("#### 📝 Lançamentos e Projeções (Tabela Interativa)")
+    
+    df_editado = st.data_editor(
+        df_calc,
+        num_rows="dynamic",
+        use_container_width=True,
+        hide_index=True,
+        column_order=["Título", "Data Compra", "Valor Investido (R$)", "Tipo Taxa", "Taxa Contratada (%)", "Ano Vencimento", "Valor Futuro no Vencimento"],
+        column_config={
+            "Tipo Taxa": st.column_config.SelectboxColumn("Tipo Taxa", options=["Pré-fixado", "Pós-fixado (IPCA+)"], required=True),
+            "Data Compra": st.column_config.DateColumn("Data Compra"),
+            "Ano Vencimento": st.column_config.NumberColumn("Ano Venc.", format="%d"),
+            "Valor Investido (R$)": st.column_config.NumberColumn("Valor Investido (R$)", format="%.2f"),
+            "Taxa Contratada (%)": st.column_config.NumberColumn("Taxa Contratada (%)", format="%.2f"),
+            "Valor Futuro no Vencimento": st.column_config.NumberColumn("Valor Futuro Projetado", disabled=True, format="R$ %.2f")
+        }
+    )
+    
+    if st.button("🔄 Recalcular / Salvar Edições Manuais", type="primary"):
+        st.session_state.df_tesouro = df_editado[colunas_padrao]
+        st.rerun()
+
+    if not df_calc.empty:
+        tot_investido = df_calc['Valor Investido (R$)'].sum()
+        tot_projetado = df_calc['Valor Futuro no Vencimento'].sum()
+        lucro_projetado = tot_projetado - tot_investido
+        
+        st.markdown("---")
+        st.markdown("#### 📊 Resumo do Tesouro Direto")
+        c_tot1, c_tot2, c_tot3 = st.columns(3)
+        c_tot1.metric("Total Investido", f_brl(tot_investido))
+        c_tot2.metric("Valor Futuro Projetado", f_brl(tot_projetado))
+        margem_lucro = f_pct((tot_projetado / tot_investido - 1) * 100) if tot_investido > 0 else "0.00%"
+        c_tot3.metric("Lucro Bruto Projetado", f_brl(lucro_projetado), margem_lucro)
+
 with tab_ia:
         st.markdown("### 💬 Comitê de IA Sênior")
         cb1, cb2 = st.columns(2)
