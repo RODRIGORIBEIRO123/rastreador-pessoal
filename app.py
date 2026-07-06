@@ -616,17 +616,18 @@ with st.sidebar:
         st.success("Dados blindados no banco com sucesso!")
         
     # --- NOVO: PAINEL DE CONTROLE ADMIN ---
-    st.divider()
-    st.markdown("### 👑 Painel Admin")
-    if st.button("Ver Relatório de Usuários", use_container_width=True):
-        conn = get_db_connection()
-        c = conn.cursor()
-        c.execute("SELECT username FROM usuarios")
-        usuarios_db = c.fetchall()
-        conn.close()
-        st.info(f"**Total de Contas Registradas:** {len(usuarios_db)}")
-        for u in usuarios_db:
-            st.write(f"👤 {u[0]}")
+    if st.session_state.username.strip().lower() == "Rodrigo":
+        st.divider()
+        st.markdown("### 👑 Painel Admin")
+        if st.button("Ver Relatório de Usuários", use_container_width=True):
+            conn = get_db_connection()
+            c = conn.cursor()
+            c.execute("SELECT username FROM usuarios")
+            usuarios_db = c.fetchall()
+            conn.close()
+            st.info(f"**Total de Contas Registradas:** {len(usuarios_db)}")
+            for u in usuarios_db:
+                st.write(f"👤 {u[0]}")
     
     if arquivo_novo:
         data_corte = st.date_input("Filtrar Novas a partir de:", pd.Timestamp.now().date() - pd.Timedelta(days=15))
