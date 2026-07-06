@@ -696,7 +696,7 @@ c_op1, c_op2, c_op3 = st.columns([1, 1.5, 1])
 
 with c_op1:
     ativos_lista = sorted(st.session_state.df_base["Ativo"].tolist()) if not st.session_state.df_base.empty else []
-    tdel = st.selectbox("Excluir Ativo da Memória:", [""] + ativos_lista)
+    tdel = st.selectbox("Excluir Ativo da Carteira:", [""] + ativos_lista)
     if st.button("Remover Ativo Selecionado", use_container_width=True) and tdel:
         st.session_state.df_base = st.session_state.df_base[st.session_state.df_base["Ativo"] != tdel]
         st.rerun()
