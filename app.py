@@ -974,7 +974,7 @@ if st.session_state.dados_mercado:
         }
         st.dataframe(st.session_state.df_recs_val.style.format(formatacao_t2), use_container_width=True, hide_index=True)
 
-    with tab_radar: 
+with tab_radar: 
         st.markdown("##### Parametrização do Radar Operacional")
         c_p1, c_p2, c_p3, c_p4 = st.columns(4)
         patr_fora = c_p1.number_input("Patrimônio Externo / Caixa (R$):", value=0.0, step=1000.0)
@@ -1024,6 +1024,7 @@ if st.session_state.dados_mercado:
         
         st.dataframe(df_radar[['Ativo', 'Tipo', 'Preço Atual', 'Teto Bazin', 'Margem Bazin (%)', 'Status Bazin', 'Justo Graham', 'Margem Graham (%)', 'Status Graham']].style.format(formatacao_t2 | {"Preço Atual": f_brl}), use_container_width=True, hide_index=True)
 
+        # --- CORREÇÃO DA BOLA DE NEVE (GRÁFICO COM ORDENAÇÃO E TOTAIS NO TOPO) ---
         st.markdown("##### ❄️ Projeção Bola de Neve (1 Ano)")
         saldo_dinamico = df_perf_final['Saldo Atual'].sum() + patr_fora
         b_div = st.session_state.df_simul['Div. Projetado (R$)'].sum() / 12 if not st.session_state.df_simul.empty else 0.0
@@ -1033,8 +1034,10 @@ if st.session_state.dados_mercado:
         lp = []
         
         for m in range(13):
+            # Formatação :02d resolve a desordem alfabética (00, 01, 02... 12)
+            mes_label = f"Mês {m:02d}" 
             if m == 0:
-                lp.append({"Mês": f"Mês {m}", "Capital Inicial": saldo_dinamico, "Aportes Acumulados": 0.0, "Juros/Divs Acumulados": 0.0})
+                lp.append({"Mês": mes_label, "Capital Inicial": saldo_dinamico, "Aportes Acumulados": 0.0, "Juros/Divs Acumulados": 0.0, "Total Projetado": saldo_dinamico})
             else:
                 gc = saldo_dinamico * rent
                 div_m = b_div * ((1 + cresc_div) ** (m/12))
@@ -1043,16 +1046,22 @@ if st.session_state.dados_mercado:
                 saldo_dinamico += (gc + div_m + aporte)
                 
                 lp.append({
-                    "Mês": f"Mês {m}", 
+                    "Mês": mes_label, 
                     "Capital Inicial": df_perf_final['Saldo Atual'].sum() + patr_fora, 
                     "Aportes Acumulados": ac_ap, 
-                    "Juros/Divs Acumulados": ac_jd
+                    "Juros/Divs Acumulados": ac_jd,
+                    "Total Projetado": saldo_dinamico
                 })
                 
         df_proj_plot = pd.DataFrame(lp)
-        df_melt_proj = df_proj_plot.melt(id_vars=["Mês"], value_vars=["Capital Inicial", "Aportes Acumulados", "Juros/Divs Acumulados"], var_name="Componente", value_name="Valor (R$)")
+        df_melt_proj = df_proj_plot.melt(id_vars=["Mês", "Total Projetado"], value_vars=["Capital Inicial", "Aportes Acumulados", "Juros/Divs Acumulados"], var_name="Componente", value_name="Valor (R$)")
         
         fig_proj = px.bar(df_melt_proj, x="Mês", y="Valor (R$)", color="Componente", title="Evolução Patrimonial Controlada", color_discrete_sequence=['#1f4e78', '#00a896', '#f4a261'])
+        
+        # Adiciona o Valor Total exato no topo de cada coluna (em formato "R$ Xk")
+        fig_proj.add_scatter(x=df_proj_plot["Mês"], y=df_proj_plot["Total Projetado"], mode='text', text=df_proj_plot["Total Projetado"].apply(lambda x: f"R$ {x/1000:.1f}k"), textposition='top center', showlegend=False)
+        fig_proj.update_layout(barmode='stack', yaxis_title="Patrimônio (R$)", xaxis_title="Evolução Mensal")
+        
         st.plotly_chart(fig_proj, use_container_width=True)
 
     with tab_graf:
