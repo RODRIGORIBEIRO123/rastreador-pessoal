@@ -106,6 +106,9 @@ UNITS_ACOES = [
 # Inicialização de Variáveis de Sessão para garantir a persistência na navegação
 if 'df_base' not in st.session_state: 
     st.session_state.df_base = pd.DataFrame()
+
+if 'df_transacoes' not in st.session_state:
+    st.session_state.df_transacoes = pd.DataFrame(columns=["Ativo", "Tipo", "Quantidade", "Preço Unitário", "Preço Médio na Época", "Resultado Realizado", "Data"])
     
 if 'df_tesouro' not in st.session_state: 
     st.session_state.df_tesouro = pd.DataFrame()
@@ -147,10 +150,12 @@ def init_db():
         c.execute('''CREATE TABLE IF NOT EXISTS carteiras (username TEXT, ativo TEXT, quantidade DOUBLE PRECISION, preco_medio DOUBLE PRECISION, data_media TEXT)''')
         c.execute('''CREATE TABLE IF NOT EXISTS tesouro_v2 (username TEXT, titulo TEXT, data_compra TEXT, tipo_taxa TEXT, investido DOUBLE PRECISION, taxa DOUBLE PRECISION, vencimento INTEGER)''')
         c.execute('''CREATE TABLE IF NOT EXISTS proventos_ledger (username TEXT, ativo TEXT, data_ex TEXT, valor DOUBLE PRECISION)''')
+        c.execute('''CREATE TABLE IF NOT EXISTS transacoes_ledger (username TEXT, ativo TEXT, tipo TEXT, quantidade DOUBLE PRECISION, preco DOUBLE PRECISION, preco_medio DOUBLE PRECISION, resultado DOUBLE PRECISION, data TEXT)''')
     else:
         c.execute('''CREATE TABLE IF NOT EXISTS carteiras (username TEXT, Ativo TEXT, Quantidade REAL, Preco_Medio REAL, Data_Media TEXT)''')
         c.execute('''CREATE TABLE IF NOT EXISTS tesouro_v2 (username TEXT, titulo TEXT, data_compra TEXT, tipo_taxa TEXT, investido REAL, taxa REAL, vencimento INTEGER)''')
         c.execute('''CREATE TABLE IF NOT EXISTS proventos_ledger (username TEXT, ativo TEXT, data_ex TEXT, valor REAL)''')
+        c.execute('''CREATE TABLE IF NOT EXISTS transacoes_ledger (username TEXT, ativo TEXT, tipo TEXT, quantidade REAL, preco REAL, preco_medio REAL, resultado REAL, data TEXT)''')
         
     c.execute('''CREATE TABLE IF NOT EXISTS chat_ia (username TEXT, role TEXT, content TEXT)''')
     conn.commit()
@@ -215,12 +220,19 @@ def salvar_dados_completos_db(username):
             c.execute(f"INSERT INTO tesouro_v2 (username, titulo, data_compra, tipo_taxa, investido, taxa, vencimento) VALUES ({PARAM}, {PARAM}, {PARAM}, {PARAM}, {PARAM}, {PARAM}, {PARAM})",
                       (usr, str(r.get('Título', 'Tesouro')), str(r.get('Data Compra', '')), str(r.get('Tipo Taxa', 'Pré-fixado')), float(limpar_numero(r.get('Valor Investido (R$)', 0))), float(limpar_numero(r.get('Taxa Contratada (%)', 0))), int(limpar_numero(r.get('Ano Vencimento', 2030)))))
             
-    # --- NOVO: SALVAR LIVRO RAZÃO DE PROVENTOS ---
+    # Salvar Livro Razão de Proventos
     c.execute(f"DELETE FROM proventos_ledger WHERE username={PARAM}", (usr,))
     if 'df_ledger' in st.session_state and not st.session_state.df_ledger.empty:
         for _, r in st.session_state.df_ledger.iterrows():
             c.execute(f"INSERT INTO proventos_ledger (username, ativo, data_ex, valor) VALUES ({PARAM}, {PARAM}, {PARAM}, {PARAM})",
                       (usr, str(r['Ativo']), str(r['Data Ex']), float(r['Valor Recebido (R$)'])))
+
+    # --- SALVAR LEDGER DE TRANSAÇÕES COMPRA/VENDA ---
+    c.execute(f"DELETE FROM transacoes_ledger WHERE username={PARAM}", (usr,))
+    if 'df_transacoes' in st.session_state and not st.session_state.df_transacoes.empty:
+        for _, r in st.session_state.df_transacoes.iterrows():
+            c.execute(f"INSERT INTO transacoes_ledger (username, ativo, tipo, quantidade, preco, preco_medio, resultado, data) VALUES ({PARAM}, {PARAM}, {PARAM}, {PARAM}, {PARAM}, {PARAM}, {PARAM}, {PARAM})",
+                      (usr, str(r['Ativo']), str(r['Tipo']), float(r['Quantidade']), float(r['Preço Unitário']), float(r['Preço Médio na Época']), float(r['Resultado Realizado']), str(r['Data'])))
 
     # Salvar Chat IA
     c.execute(f"DELETE FROM chat_ia WHERE username={PARAM}", (usr,))
@@ -239,26 +251,30 @@ def carregar_dados_completos_db(username):
     df_cart = pd.DataFrame(c.fetchall(), columns=["Ativo", "Quantidade", "Preço Médio", "Data Média"])
     if not df_cart.empty: 
         df_cart['Data Média'] = pd.to_datetime(df_cart['Data Média']).dt.date
-    else: 
+    else:
         df_cart = pd.DataFrame(columns=["Ativo", "Quantidade", "Preço Médio", "Data Média"])
-        
     st.session_state.df_base = df_cart
     
     c.execute(f"SELECT titulo, data_compra, tipo_taxa, investido, taxa, vencimento FROM tesouro_v2 WHERE username={PARAM}", (usr,))
     df_tes = pd.DataFrame(c.fetchall(), columns=["Título", "Data Compra", "Tipo Taxa", "Valor Investido (R$)", "Taxa Contratada (%)", "Ano Vencimento"])
     if not df_tes.empty: 
         df_tes['Data Compra'] = pd.to_datetime(df_tes['Data Compra']).dt.date
-    else: 
+    else:
         df_tes = pd.DataFrame(columns=["Título", "Data Compra", "Tipo Taxa", "Valor Investido (R$)", "Taxa Contratada (%)", "Ano Vencimento", "Valor Futuro no Vencimento"])
-        
     st.session_state.df_tesouro = df_tes
 
-    # --- NOVO: CARREGAR LIVRO RAZÃO DE PROVENTOS ---
     c.execute(f"SELECT ativo, data_ex, valor FROM proventos_ledger WHERE username={PARAM}", (usr,))
     df_led = pd.DataFrame(c.fetchall(), columns=["Ativo", "Data Ex", "Valor Recebido (R$)"])
-    if not df_led.empty:
+    if not df_led.empty: 
         df_led['Data Ex'] = pd.to_datetime(df_led['Data Ex']).dt.date
     st.session_state.df_ledger = df_led
+
+    # --- CARREGAR LEDGER DE TRANSAÇÕES COMPRA/VENDA ---
+    c.execute(f"SELECT ativo, tipo, quantidade, preco, preco_medio, resultado, data FROM transacoes_ledger WHERE username={PARAM}", (usr,))
+    df_tx = pd.DataFrame(c.fetchall(), columns=["Ativo", "Tipo", "Quantidade", "Preço Unitário", "Preço Médio na Época", "Resultado Realizado", "Data"])
+    if not df_tx.empty: 
+        df_tx['Data'] = pd.to_datetime(df_tx['Data']).dt.date
+    st.session_state.df_transacoes = df_tx
     
     c.execute(f"SELECT role, content FROM chat_ia WHERE username={PARAM}", (usr,))
     df_chat = pd.DataFrame(c.fetchall(), columns=["role", "content"])
