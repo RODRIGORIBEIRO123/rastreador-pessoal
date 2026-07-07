@@ -928,14 +928,14 @@ st.write("---")
 # ==========================================
 # 7. DASHBOARDS E RELATÓRIOS (TABS DE ANÁLISE)
 # ==========================================
-tab_visao, tab_val, tab_radar, tab_graf, tab_prov, tab_extrato, tab_tesouro, tab_ia = st.tabs([
+tab_visao, tab_val, tab_radar, tab_graf, tab_prov, tab_tesouro, tab_extrato, tab_ia = st.tabs([
     "📊 Visão Geral", 
     "💰 Valuation", 
     "🎯 Radar & Projeção", 
     "📈 Gráficos", 
     "💸 Proventos B3", 
-    "🏛️ Tesouro Direto",
-    "📜 Extrato & Lucros",
+    "🏛️ Tesouro Direto", 
+    "📜 Extrato & Lucros", 
     "💬 Gestora IA (CNPI)"
 ])
 
@@ -1204,7 +1204,7 @@ if st.session_state.dados_mercado:
                                     r_atv = ((p_f + d_p) / p_i - 1) * 100
                             except: pass
                             
-                            it_m = {'Ativo': t, 'Carteira (c/ Div)': r_atv}
+                            it_m = {'Ativo': t, 'Carteira (c/ Div)', r_atv}
                             if 'CDI' in ind_sel: it_m['CDI'] = cdi_m
                             if 'IPCA' in ind_sel: it_m['IPCA'] = ipca_m
                             l_res.append(it_m)
@@ -1239,13 +1239,11 @@ if st.session_state.dados_mercado:
                     val_recebido = 0.0
                     val_unitario = 0.0
                     
-                    # --- NOVO MOTOR: Bypassa o Yahoo Finance e lê direto do seu Banco de Dados Local ---
                     if 'df_ledger' in st.session_state and not st.session_state.df_ledger.empty:
                         df_l = st.session_state.df_ledger
                         df_f_mes = df_l[(df_l['Ativo'] == t_tk) & (pd.to_datetime(df_l['Data Ex']).dt.month == m_sel) & (pd.to_datetime(df_l['Data Ex']).dt.year == a_sel)]
                         if not df_f_mes.empty:
                             val_recebido = float(df_f_mes['Valor Recebido (R$)'].sum())
-                            # Deduz o valor unitário com base na quantidade
                             val_unitario = val_recebido / dm['Qtd'] if dm['Qtd'] > 0 else 0.0
                     
                     yoc = (val_recebido / (dm['Qtd'] * dm['PM'])) * 100 if dm['PM'] > 0 else 0
@@ -1276,7 +1274,6 @@ if st.session_state.dados_mercado:
                 st.session_state.divs_m = m_sel
                 st.session_state.divs_ano = a_sel
         
-        # --- VOLTANDO À ESTRUTURA SEPARADA ORIGINAL (FIIs EM CIMA, AÇÕES EMBAIXO) ---
         tot_mes = 0.0
         
         if 'divs_f' in st.session_state and not st.session_state.divs_f.empty:
@@ -1345,7 +1342,6 @@ if st.session_state.dados_mercado:
                         fig_divs.update_traces(texttemplate='R$ %{text:,.2f}', textposition='outside')
                     else:
                         df_chart_g = df_chart.groupby(['Mês/Ano', 'Tipo'])['Valor Recebido (R$)'].sum().reset_index().sort_values('Mês/Ano')
-                        # --- CORREÇÃO DO GRÁFICO: DEIXA AS COLUNAS LADO A LADO EM VEZ DE EMPILHADAS ---
                         fig_divs = px.bar(df_chart_g, x='Mês/Ano', y='Valor Recebido (R$)', color='Tipo', barmode='group', title="Histórico de Proventos por Classe (Lado a Lado)", color_discrete_map={'Ação': '#1f4e78', 'FII': '#00a896'})
                         fig_divs.update_traces(texttemplate='R$ %{y:,.2f}', textposition='outside')
                         
@@ -1486,41 +1482,39 @@ with tab_tesouro:
         c_tot3.metric("Lucro Bruto Projetado", f_brl(lucro_projetado), margem_lucro)
 
 with tab_extrato:
-        st.markdown("### 📜 Histórico de Transações e Ganho de Capital")
-        st.info("Registro cronológico imutável de todas as compras e vendas efetuadas no terminal.")
+    st.markdown("### 📜 Histórico de Transações e Ganho de Capital")
+    st.info("Registro cronológico imutável de todas as compras e vendas efetuadas no terminal.")
+    
+    if 'df_transacoes' in st.session_state and not st.session_state.df_transacoes.empty:
+        df_tx_plot = st.session_state.df_transacoes.sort_values("Data", ascending=False)
         
-        if 'df_transacoes' in st.session_state and not st.session_state.df_transacoes.empty:
-            df_tx_plot = st.session_state.df_transacoes.sort_values("Data", ascending=False)
-            
-            # Apuração Contábil Realizada das Vendas
-            lucro_total = df_tx_plot[df_tx_plot['Tipo'] == 'Venda']['Resultado Realizado'].sum()
-            
-            c_card1, c_card2 = st.columns(2)
-            if lucro_total >= 0:
-                c_card1.metric("Ganho de Capital Líquido (Lucro Realizado)", f_brl(lucro_total))
-            else:
-                c_card1.metric("Prejuízo Consolidado Realizado", f_brl(lucro_total))
-                
-            st.markdown("#### 📑 Histórico de Ordens Lançadas")
-            
-            format_tx = {
-                "Quantidade": lambda x: f"{int(x)}",
-                "Preço Unitário": f_brl,
-                "Preço Médio na Época": lambda x: f_brl(x) if x > 0 else "-",
-                "Resultado Realizado": lambda x: f_brl(x) if x != 0 else "-"
-            }
-            st.dataframe(df_tx_plot.style.format(format_tx), use_container_width=True, hide_index=True)
-            
-            # Gerador de planilha de auditoria para download
-            csv_tx = df_tx_plot.to_csv(index=False, sep=';', encoding='utf-8-sig')
-            st.download_button(
-                label="📥 Baixar Livro de Transações Completo (CSV Backup)",
-                data=csv_tx,
-                file_name=f"Extrato_Transacoes_{st.session_state.username}.csv",
-                use_container_width=True
-            )
+        lucro_total = df_tx_plot[df_tx_plot['Tipo'] == 'Venda']['Resultado Realizado'].sum()
+        
+        c_card1, c_card2 = st.columns(2)
+        if lucro_total >= 0:
+            c_card1.metric("Ganho de Capital Líquido (Lucro Realizado)", f_brl(lucro_total))
         else:
-            st.info("Nenhuma movimentação registrada no livro de transações.")
+            c_card1.metric("Prejuízo Consolidado Realizado", f_brl(lucro_total))
+            
+        st.markdown("#### 📑 Histórico de Ordens Lançadas")
+        
+        format_tx = {
+            "Quantidade": lambda x: f"{int(x)}",
+            "Preço Unitário": f_brl,
+            "Preço Médio na Época": lambda x: f_brl(x) if x > 0 else "-",
+            "Resultado Realizado": lambda x: f_brl(x) if x != 0 else "-"
+        }
+        st.dataframe(df_tx_plot.style.format(format_tx), use_container_width=True, hide_index=True)
+        
+        csv_tx = df_tx_plot.to_csv(index=False, sep=';', encoding='utf-8-sig')
+        st.download_button(
+            label="📥 Baixar Livro de Transações Completo (CSV Backup)",
+            data=csv_tx,
+            file_name=f"Extrato_Transacoes_{st.session_state.username}.csv",
+            use_container_width=True
+        )
+    else:
+        st.info("Nenhuma movimentação registrada no livro de transações.")
 
 with tab_ia:
     st.markdown("### 💬 Comitê de IA Sênior")
