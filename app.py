@@ -928,7 +928,7 @@ st.write("---")
 # ==========================================
 # 7. DASHBOARDS E RELATÓRIOS (TABS DE ANÁLISE)
 # ==========================================
-tab_visao, tab_val, tab_radar, tab_graf, tab_prov, tab_tesouro, tab_ia = st.tabs([
+tab_visao, tab_val, tab_radar, tab_graf, tab_prov, tab_extrato, tab_tesouro, tab_ia = st.tabs([
     "📊 Visão Geral", 
     "💰 Valuation", 
     "🎯 Radar & Projeção", 
