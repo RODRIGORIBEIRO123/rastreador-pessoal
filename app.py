@@ -1367,7 +1367,6 @@ with tab_tesouro:
     if st.session_state.df_tesouro.empty:
         st.session_state.df_tesouro = pd.DataFrame(columns=colunas_padrao)
 
-    # --- NOVO MOTOR DE INSERÇÃO: Campos de texto livre (nunca mais trava) ---
     with st.expander("➕ Lançar Novo Título Manualmente", expanded=False):
         with st.form("form_add_tesouro", clear_on_submit=True):
             ct1, ct2, ct3 = st.columns(3)
@@ -1376,14 +1375,12 @@ with tab_tesouro:
             n_dt = ct3.date_input("Data da Compra", value=pd.Timestamp.now().date())
 
             ct4, ct5, ct6 = st.columns(3)
-            # Usando text_input. O usuário pode apagar tudo sem congelar a tela.
             n_inv_str = ct4.text_input("Valor Investido (R$)", value="1000.00")
             n_tx_str = ct5.text_input("Taxa Contratada / Prêmio (%)", value="0.00", help="Use ponto ou vírgula. Ex: 0.15 (Selic) ou 10.5 (Pré-fixado).")
             n_venc_str = ct6.text_input("Ano de Vencimento", value=str(pd.Timestamp.now().year + 3))
 
             if st.form_submit_button("Registrar Título na Carteira", type="primary"):
                 try:
-                    # Converte o texto para número apenas na hora de salvar, trocando vírgula por ponto
                     n_inv = float(n_inv_str.replace(',', '.'))
                     n_tx = float(n_tx_str.replace(',', '.'))
                     n_venc = int(n_venc_str.strip())
@@ -1395,7 +1392,9 @@ with tab_tesouro:
                     st.session_state.df_tesouro = pd.concat([st.session_state.df_tesouro, novo_t], ignore_index=True)
                     if st.session_state.username:
                         salvar_dados_completos_db(st.session_state.username)
-                    st.rerun()
+                    
+                    # RERUN REMOVIDO DAQUI. Adicionada apenas a mensagem de sucesso.
+                    st.success("Tópico adicionado com sucesso! A tabela abaixo já foi atualizada.")
                 except ValueError:
                     st.error("⚠️ Erro de digitação: Certifique-se de inserir apenas números nos campos de Valor, Taxa e Ano.")
 
@@ -1520,7 +1519,8 @@ with tab_tesouro:
         st.session_state.df_tesouro = df_editado_t[colunas_padrao]
         if st.session_state.username:
             salvar_dados_completos_db(st.session_state.username)
-        st.rerun()
+        # RERUN REMOVIDO DAQUI TAMBÉM.
+        st.success("Alterações salvas permanentemente no banco de dados!")
 
     if not df_calc.empty:
         tot_investido = df_calc['Valor Investido (R$)'].sum()
