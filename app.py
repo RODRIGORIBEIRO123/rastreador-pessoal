@@ -732,19 +732,71 @@ with c_op1:
 
 with c_op2:
     nt = st.text_input("Novo Aporte ou Ativo Manual (Ticker)")
-    cq, cp, cd = st.columns([1, 1, 1.2]) # Ajustado para acomodar 3 colunas lado a lado
+    tipo_op = st.selectbox("Tipo de Operação:", ["Compra", "Venda"], key="tipo_op_manual")
+    cq, cp, cd = st.columns([1, 1, 1.2])
     nq = cq.number_input("Quantidade", min_value=1)
     np_v = cp.number_input("Preço Unitário (R$)", min_value=0.01)
     nd_v = cd.date_input("Data da Operação", value=pd.Timestamp.now().date())
     
     if st.button("Adicionar à Carteira / Integrar", use_container_width=True) and nt:
-        nova_linha = pd.DataFrame([{
-            "Ativo": nt.upper().strip(), 
-            "Quantidade": float(nq), 
-            "Preço Médio": float(np_v), 
-            "Data Média": nd_v # Agora o sistema usa a data exata escolhida por você
+        ticker = nt.upper().strip()
+        df_base = st.session_state.df_base.copy()
+        
+        pm_epoca = 0.0
+        resultado_realizado = 0.0
+        
+        # Verifica a posição atual para obter o preço médio histórico antes da mudança
+        if not df_base.empty and ticker in df_base['Ativo'].values:
+            pm_epoca = float(df_base[df_base['Ativo'] == ticker]['Preço Médio'].values[0])
+            qtd_atual = float(df_base[df_base['Ativo'] == ticker]['Quantidade'].values[0])
+        else:
+            qtd_atual = 0.0
+            
+        if tipo_op == "Compra":
+            nova_linha = pd.DataFrame([{
+                "Ativo": ticker, 
+                "Quantidade": float(nq), 
+                "Preço Médio": float(np_v), 
+                "Data Média": nd_v
+            }])
+            st.session_state.df_base = consolidar_carteira(pd.concat([df_base, nova_linha], ignore_index=True))
+            resultado_realizado = 0.0 # Compra não gera lucro/prejuízo realizado imediato
+            
+        elif tipo_op == "Venda":
+            if qtd_atual >= nq:
+                # Lucro/Prejuízo = (Preço de Venda - Custo Médio de Aquisição) * Quantidade
+                resultado_realizado = (float(np_v) - pm_epoca) * float(nq)
+                
+                # Deduz a quantidade vendida da carteira ativa
+                df_base.loc[df_base['Ativo'] == ticker, 'Quantidade'] -= float(nq)
+                
+                # Se a posição foi zerada por completo, extingue a linha da carteira ativa
+                if df_base.loc[df_base['Ativo'] == ticker, 'Quantidade'].values[0] <= 0:
+                    df_base = df_base[df_base['Ativo'] != ticker]
+                    
+                st.session_state.df_base = df_base
+            else:
+                st.error(f"Operação Bloqueada: Você possui apenas {int(qtd_atual)} cotas de {ticker}. Não pode vender {nq}.")
+                st.stop()
+                
+        # --- REGISTRAR NO LEDGER DE TRANSAÇÕES PERMANENTE ---
+        nova_tx = pd.DataFrame([{
+            "Ativo": ticker,
+            "Tipo": tipo_op,
+            "Quantidade": float(nq),
+            "Preço Unitário": float(np_v),
+            "Preço Médio na Época": pm_epoca,
+            "Resultado Realizado": resultado_realizado,
+            "Data": nd_v
         }])
-        st.session_state.df_base = consolidar_carteira(pd.concat([st.session_state.df_base, nova_linha], ignore_index=True))
+        
+        if 'df_transacoes' not in st.session_state or st.session_state.df_transacoes.empty:
+            st.session_state.df_transacoes = nova_tx
+        else:
+            st.session_state.df_transacoes = pd.concat([st.session_state.df_transacoes, nova_tx], ignore_index=True)
+            
+        if st.session_state.username:
+            salvar_dados_completos_db(st.session_state.username)
         st.rerun()
 
 with c_op3:
@@ -882,7 +934,8 @@ tab_visao, tab_val, tab_radar, tab_graf, tab_prov, tab_tesouro, tab_ia = st.tabs
     "🎯 Radar & Projeção", 
     "📈 Gráficos", 
     "💸 Proventos B3", 
-    "🏛️ Tesouro Direto", 
+    "🏛️ Tesouro Direto",
+    "📜 Extrato & Lucros",
     "💬 Gestora IA (CNPI)"
 ])
 
@@ -1431,6 +1484,43 @@ with tab_tesouro:
         c_tot2.metric("Valor Futuro Projetado", f_brl(tot_projetado))
         margem_lucro = f_pct((tot_projetado / tot_investido - 1) * 100) if tot_investido > 0 else "0.00%"
         c_tot3.metric("Lucro Bruto Projetado", f_brl(lucro_projetado), margem_lucro)
+
+with tab_extrato:
+        st.markdown("### 📜 Histórico de Transações e Ganho de Capital")
+        st.info("Registro cronológico imutável de todas as compras e vendas efetuadas no terminal.")
+        
+        if 'df_transacoes' in st.session_state and not st.session_state.df_transacoes.empty:
+            df_tx_plot = st.session_state.df_transacoes.sort_values("Data", ascending=False)
+            
+            # Apuração Contábil Realizada das Vendas
+            lucro_total = df_tx_plot[df_tx_plot['Tipo'] == 'Venda']['Resultado Realizado'].sum()
+            
+            c_card1, c_card2 = st.columns(2)
+            if lucro_total >= 0:
+                c_card1.metric("Ganho de Capital Líquido (Lucro Realizado)", f_brl(lucro_total))
+            else:
+                c_card1.metric("Prejuízo Consolidado Realizado", f_brl(lucro_total))
+                
+            st.markdown("#### 📑 Histórico de Ordens Lançadas")
+            
+            format_tx = {
+                "Quantidade": lambda x: f"{int(x)}",
+                "Preço Unitário": f_brl,
+                "Preço Médio na Época": lambda x: f_brl(x) if x > 0 else "-",
+                "Resultado Realizado": lambda x: f_brl(x) if x != 0 else "-"
+            }
+            st.dataframe(df_tx_plot.style.format(format_tx), use_container_width=True, hide_index=True)
+            
+            # Gerador de planilha de auditoria para download
+            csv_tx = df_tx_plot.to_csv(index=False, sep=';', encoding='utf-8-sig')
+            st.download_button(
+                label="📥 Baixar Livro de Transações Completo (CSV Backup)",
+                data=csv_tx,
+                file_name=f"Extrato_Transacoes_{st.session_state.username}.csv",
+                use_container_width=True
+            )
+        else:
+            st.info("Nenhuma movimentação registrada no livro de transações.")
 
 with tab_ia:
     st.markdown("### 💬 Comitê de IA Sênior")
