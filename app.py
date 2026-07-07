@@ -1367,7 +1367,7 @@ with tab_tesouro:
     if st.session_state.df_tesouro.empty:
         st.session_state.df_tesouro = pd.DataFrame(columns=colunas_padrao)
 
-    # --- CORREÇÃO 1: clear_on_submit=True limpa a memória do form sem travar ---
+    # --- NOVO MOTOR DE INSERÇÃO: Campos de texto livre (nunca mais trava) ---
     with st.expander("➕ Lançar Novo Título Manualmente", expanded=False):
         with st.form("form_add_tesouro", clear_on_submit=True):
             ct1, ct2, ct3 = st.columns(3)
@@ -1375,21 +1375,29 @@ with tab_tesouro:
             n_tipo = ct2.selectbox("Indexador / Tipo", ["Tesouro Selic", "Pós-fixado (IPCA+)", "Pré-fixado"])
             n_dt = ct3.date_input("Data da Compra", value=pd.Timestamp.now().date())
 
-            # --- CORREÇÃO 2: min_value relaxado para o navegador não congelar ao apagar ---
             ct4, ct5, ct6 = st.columns(3)
-            n_inv = ct4.number_input("Valor Investido (R$)", min_value=0.0, value=1000.0, step=100.0)
-            n_tx = ct5.number_input("Taxa Contratada / Prêmio (%)", value=0.00, step=0.01, help="Para Selic ou IPCA, coloque apenas o prêmio (ex: 0.15). Para Pré-fixado, a taxa cheia (ex: 10.5).")
-            n_venc = ct6.number_input("Ano de Vencimento", min_value=2000, value=pd.Timestamp.now().year + 3, step=1)
+            # Usando text_input. O usuário pode apagar tudo sem congelar a tela.
+            n_inv_str = ct4.text_input("Valor Investido (R$)", value="1000.00")
+            n_tx_str = ct5.text_input("Taxa Contratada / Prêmio (%)", value="0.00", help="Use ponto ou vírgula. Ex: 0.15 (Selic) ou 10.5 (Pré-fixado).")
+            n_venc_str = ct6.text_input("Ano de Vencimento", value=str(pd.Timestamp.now().year + 3))
 
             if st.form_submit_button("Registrar Título na Carteira", type="primary"):
-                novo_t = pd.DataFrame([{
-                    "Título": n_tit.strip(), "Data Compra": n_dt, "Valor Investido (R$)": float(n_inv),
-                    "Tipo Taxa": n_tipo, "Taxa Contratada (%)": float(n_tx), "Ano Vencimento": int(n_venc)
-                }])
-                st.session_state.df_tesouro = pd.concat([st.session_state.df_tesouro, novo_t], ignore_index=True)
-                if st.session_state.username:
-                    salvar_dados_completos_db(st.session_state.username)
-                st.rerun()
+                try:
+                    # Converte o texto para número apenas na hora de salvar, trocando vírgula por ponto
+                    n_inv = float(n_inv_str.replace(',', '.'))
+                    n_tx = float(n_tx_str.replace(',', '.'))
+                    n_venc = int(n_venc_str.strip())
+                    
+                    novo_t = pd.DataFrame([{
+                        "Título": n_tit.strip(), "Data Compra": n_dt, "Valor Investido (R$)": n_inv,
+                        "Tipo Taxa": n_tipo, "Taxa Contratada (%)": n_tx, "Ano Vencimento": n_venc
+                    }])
+                    st.session_state.df_tesouro = pd.concat([st.session_state.df_tesouro, novo_t], ignore_index=True)
+                    if st.session_state.username:
+                        salvar_dados_completos_db(st.session_state.username)
+                    st.rerun()
+                except ValueError:
+                    st.error("⚠️ Erro de digitação: Certifique-se de inserir apenas números nos campos de Valor, Taxa e Ano.")
 
     with st.expander("📂 Importar Planilha da B3 / Corretora", expanded=False):
         arq_tesouro = st.file_uploader("Upload da Planilha do Tesouro Direto", type=["xlsx", "csv"], key="up_tesouro")
@@ -1492,7 +1500,7 @@ with tab_tesouro:
     
     df_editado_t = st.data_editor(
         df_calc,
-        key="editor_tesouro_fix", # --- CORREÇÃO 3: Chave única evita loop infinito na tabela ---
+        key="editor_tesouro_fix", 
         num_rows="dynamic",
         use_container_width=True,
         hide_index=True,
