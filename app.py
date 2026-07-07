@@ -1235,33 +1235,56 @@ if st.session_state.dados_mercado:
         if c_btn.button("🔄 Processar Renda Mensal", use_container_width=True):
             with st.spinner("Lendo base de dados local (Livro-Razão)..."):
                 la, lf = [], []
-                for t_tk, dm in st.session_state.dados_mercado.items():
+                
+                # --- NOVO: Mapeia Ativos Atuais + Ativos Vendidos que pagaram no mês ---
+                ativos_para_processar = set(st.session_state.dados_mercado.keys()) if st.session_state.dados_mercado else set()
+                
+                df_l = pd.DataFrame()
+                if 'df_ledger' in st.session_state and not st.session_state.df_ledger.empty:
+                    df_l = st.session_state.df_ledger
+                    df_mes_atual = df_l[(pd.to_datetime(df_l['Data Ex']).dt.month == m_sel) & (pd.to_datetime(df_l['Data Ex']).dt.year == a_sel)]
+                    ativos_para_processar.update(df_mes_atual['Ativo'].unique())
+                
+                for t_tk in ativos_para_processar:
+                    dm = st.session_state.dados_mercado.get(t_tk, None) if st.session_state.dados_mercado else None
+                    
                     val_recebido = 0.0
                     val_unitario = 0.0
                     
-                    if 'df_ledger' in st.session_state and not st.session_state.df_ledger.empty:
-                        df_l = st.session_state.df_ledger
+                    if not df_l.empty:
                         df_f_mes = df_l[(df_l['Ativo'] == t_tk) & (pd.to_datetime(df_l['Data Ex']).dt.month == m_sel) & (pd.to_datetime(df_l['Data Ex']).dt.year == a_sel)]
                         if not df_f_mes.empty:
                             val_recebido = float(df_f_mes['Valor Recebido (R$)'].sum())
-                            val_unitario = val_recebido / dm['Qtd'] if dm['Qtd'] > 0 else 0.0
                     
-                    yoc = (val_recebido / (dm['Qtd'] * dm['PM'])) * 100 if dm['PM'] > 0 else 0
-                    dy_m = (val_unitario / dm['Preço Atual']) * 100 if dm['Preço Atual'] > 0 else 0
-                    
-                    if dm['Tipo'] == 'FII':
-                        lf.append({
-                            "Fundo (FII)": t_tk, 
-                            "Unitário (R$)": val_unitario, 
-                            "Recebido (R$)": val_recebido, 
-                            "Yield on Cost (%)": yoc, 
-                            "DY Atual (%)": dy_m,
-                            "Status": "Pago / Provisionado 🟢" if val_unitario > 0 else "Aguardando 🟡"
-                        })
+                    if dm:
+                        # O ativo ainda está na sua carteira
+                        val_unitario = val_recebido / dm['Qtd'] if dm['Qtd'] > 0 else 0.0
+                        yoc = (val_recebido / (dm['Qtd'] * dm['PM'])) * 100 if dm['PM'] > 0 else 0
+                        dy_m = (val_unitario / dm['Preço Atual']) * 100 if dm['Preço Atual'] > 0 else 0
+                        tipo = dm['Tipo']
+                        nome_exib = t_tk
                     else:
-                        if val_unitario > 0: 
+                        # O ativo foi vendido, mas você tem direito ao provento deste mês!
+                        yoc = 0.0
+                        dy_m = 0.0
+                        tipo = 'FII' if t_tk.endswith('11') else 'Ação'
+                        nome_exib = f"{t_tk} (Vendido)"
+                        
+                    if tipo == 'FII':
+                        # Só adiciona ativos vendidos se tiver recebido dinheiro. Ativos atuais mostra sempre (Aguardando)
+                        if dm or val_recebido > 0:
+                            lf.append({
+                                "Fundo (FII)": nome_exib, 
+                                "Unitário (R$)": val_unitario, 
+                                "Recebido (R$)": val_recebido, 
+                                "Yield on Cost (%)": yoc, 
+                                "DY Atual (%)": dy_m,
+                                "Status": "Pago / Provisionado 🟢" if val_recebido > 0 else "Aguardando 🟡"
+                            })
+                    else:
+                        if val_recebido > 0: 
                             la.append({
-                                "Ação": t_tk, 
+                                "Ação": nome_exib, 
                                 "Unitário (R$)": val_unitario, 
                                 "Recebido (R$)": val_recebido, 
                                 "Yield on Cost (%)": yoc, 
@@ -1350,11 +1373,6 @@ if st.session_state.dados_mercado:
                     st.warning("Nenhum registro de provento encontrado para os filtros selecionados no gráfico.")
         else:
             st.info("Nenhum histórico de proventos registrado no Livro-Razão. Conecte ao mercado para iniciar o rastreamento.")
-
-else:
-    for tb in [tab_visao, tab_val, tab_radar, tab_graf, tab_prov]:
-        with tb: 
-            st.info("ℹ️ Adicione ativos na tabela de Controle Manual ou via upload de planilha na barra lateral. Depois, clique em **Conectar ao Mercado Vivo** para preencher essas abas.")
 
 # ==========================================
 # 8. ABAS ISOLADAS (SEMPRE ATIVAS)
