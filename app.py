@@ -1204,7 +1204,7 @@ if st.session_state.dados_mercado:
                                     r_atv = ((p_f + d_p) / p_i - 1) * 100
                             except: pass
                             
-                            it_m = {'Ativo': t, 'Carteira (c/ Div)', r_atv}
+                            it_m = {'Ativo': t, 'Carteira (c/ Div)': r_atv}
                             if 'CDI' in ind_sel: it_m['CDI'] = cdi_m
                             if 'IPCA' in ind_sel: it_m['IPCA'] = ipca_m
                             l_res.append(it_m)
