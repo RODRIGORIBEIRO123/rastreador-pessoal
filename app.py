@@ -1136,130 +1136,121 @@ if st.session_state.dados_mercado:
 
     with tab_radar_fii:
         st.markdown("### 🏢 Radar Analítico de FIIs")
-        st.info("Acompanhe os fundos da sua carteira e adicione novos ativos do mercado. **Clique no cabeçalho das colunas para ordenar.**")
+        st.info("Acompanhe os fundos da sua carteira e analise novas oportunidades. **Os preços e dividendos são calculados via histórico oficial B3.** Se o P/VP de algum ativo estiver em branco devido a limitações de nuvem da API, você pode preenchê-lo diretamente na tabela.")
         
+        # Inicializa a memória estável de pesquisas e P/VPs manuais se não existirem
         if 'fiis_pesquisados' not in st.session_state:
             st.session_state.fiis_pesquisados = []
+        if 'fii_pvp_manual' not in st.session_state:
+            st.session_state.fii_pvp_manual = {}
             
-        # --- CORREÇÃO 1: st.form evita que a tela apague o ativo ao apertar Enter ---
-        with st.form("busca_fii_form", clear_on_submit=True):
-            c_fii1, c_fii2, c_fii3 = st.columns([2, 1, 1])
-            novo_fii = c_fii1.text_input("Simular FII fora da carteira (Ex: HGLG11):")
-            
-            btn_buscar = c_fii2.form_submit_button("🔍 Buscar Ativo", use_container_width=True)
-            btn_limpar = c_fii3.form_submit_button("🗑️ Limpar Pesquisas", use_container_width=True)
-            
-            if btn_buscar and novo_fii:
+        c_fii1, c_fii2, c_fii3 = st.columns([2, 1, 1])
+        novo_fii = c_fii1.text_input("Simular FII fora da carteira (Ex: HGLG11):", key="txt_busca_fii")
+        
+        if c_fii2.button("🔍 Buscar Ativo", use_container_width=True):
+            if novo_fii:
                 tk_clean = novo_fii.upper().strip()
-                if not tk_clean.endswith('11'): 
+                if not tk_clean.endswith('11') and len(tk_clean) == 4: 
                     tk_clean += '11'
                 if tk_clean not in st.session_state.fiis_pesquisados:
                     st.session_state.fiis_pesquisados.append(tk_clean)
                 st.rerun()
                     
-            if btn_limpar:
-                st.session_state.fiis_pesquisados = []
-                st.rerun()
-                
-        # Junta os FIIs que você já tem com os que você pesquisou
+        if c_fii3.button("🗑️ Limpar Pesquisas", use_container_width=True):
+            st.session_state.fiis_pesquisados = []
+            st.rerun()
+            
+        # Coleta a lista de FIIs ativos na carteira
         fiis_carteira = df_perf_final[df_perf_final['Tipo'] == 'FII']['Ativo'].tolist() if ('df_perf_final' in locals() and not df_perf_final.empty) else []
         todos_fiis = list(set(fiis_carteira + st.session_state.fiis_pesquisados))
         
         if todos_fiis:
-            with st.spinner("Bypass ativado: Cruzando Yahoo Finance com StatusInvest..."):
+            with st.spinner("Buscando série de cotações e proventos históricos na B3..."):
                 dados_fii = []
-                import urllib.request
-                import re
                 
                 for f in todos_fiis:
                     pm = df_perf_final[df_perf_final['Ativo'] == f]['Preço Médio'].values[0] if f in fiis_carteira else 0.0
                     
                     preco_mercado = 0.0
-                    pvp = np.nan
                     dy_anual = 0.0
                     dy_mensal = 0.0
                     
-                    # 1. Tenta Yahoo Finance para preço
+                    # Motor ultra-estável: usa .history que ignora bloqueios de servidores do Yahoo
                     try:
                         t = yf.Ticker(f"{f}.SA")
-                        hist = t.history(period="5d")
+                        hist = t.history(period="1mo")
                         if not hist.empty:
                             preco_mercado = float(hist['Close'].iloc[-1])
-                        elif 'currentPrice' in t.info:
-                            preco_mercado = float(t.info['currentPrice'])
                             
+                        # Calcula dividendos direto do histórico público de proventos dos últimos 12 meses
                         divs = t.dividends
                         if not divs.empty:
-                            if divs.index.tz is not None: divs.index = divs.index.tz_localize(None)
+                            if divs.index.tz is not None: 
+                                divs.index = divs.index.tz_localize(None)
                             hoje_fii = pd.Timestamp.now()
                             divs_12m = divs[divs.index >= (hoje_fii - pd.DateOffset(months=12))]
+                            
                             if preco_mercado > 0:
                                 dy_anual = (float(divs_12m.sum()) / preco_mercado) * 100
                                 dy_mensal = (float(divs.iloc[-1]) / preco_mercado) * 100
-                    except: pass
+                    except:
+                        pass
+                        
+                    # Recupera o P/VP (verifica primeiro a memória local, depois o Valuation)
+                    pvp = st.session_state.fii_pvp_manual.get(f, 0.0)
                     
-                    # --- CORREÇÃO 2: Bypass de Web Scraping para FIIs ---
-                    # Yahoo Finance é cego para P/VP de FII. Vamos buscar direto na raça!
-                    if pd.isna(pvp) or pvp == 0 or dy_anual == 0:
-                        try:
-                            req = urllib.request.Request(
-                                f"https://statusinvest.com.br/fundos-imobiliarios/{f.lower()}", 
-                                headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-                            )
-                            html = urllib.request.urlopen(req, timeout=3).read().decode('utf-8')
-                            
-                            # Sequestra o P/VP
-                            if pd.isna(pvp) or pvp == 0:
-                                match_pvp = re.search(r'P/VP.*?<strong[^>]*>([\d,]+)</strong>', html, re.IGNORECASE | re.DOTALL)
-                                if match_pvp: pvp = float(match_pvp.group(1).replace(',', '.'))
-                                
-                            # Sequestra o DY Anual (se o Yahoo falhou)
-                            if dy_anual == 0:
-                                match_dy = re.search(r'Dividend Yield.*?<strong[^>]*>([\d,]+)</strong>', html, re.IGNORECASE | re.DOTALL)
-                                if match_dy: dy_anual = float(match_dy.group(1).replace(',', '.'))
-                                
-                            # Se não pegou nem o preço do Yahoo, pega daqui também
-                            if preco_mercado == 0:
-                                match_pr = re.search(r'Valor atual.*?<strong[^>]*>([\d,]+)</strong>', html, re.IGNORECASE | re.DOTALL)
-                                if match_pr: preco_mercado = float(match_pr.group(1).replace(',', '.'))
-                        except: pass
-                    
-                    # Fallback de segurança (sua tabela de Valuation)
-                    if pd.isna(pvp) or pvp == 0:
+                    if pvp == 0.0:
                         if 'df_simul' in st.session_state and not st.session_state.df_simul.empty and f in st.session_state.df_simul['Ativo'].values:
                             try:
                                 vpa_simul = float(st.session_state.df_simul.loc[st.session_state.df_simul['Ativo'] == f, 'VPA (Contábil)'].values[0])
-                                if vpa_simul > 0 and preco_mercado > 0: pvp = preco_mercado / vpa_simul
-                            except: pass
-
+                                if vpa_simul > 0 and preco_mercado > 0: 
+                                    pvp = preco_mercado / vpa_simul
+                            except: 
+                                pass
+                    
                     var_pm = ((preco_mercado / pm) - 1) * 100 if pm > 0 and preco_mercado > 0 else 0.0
                     
+                    # A linha nunca deixa de ser criada, garantindo a aparição do ativo na busca
                     dados_fii.append({
                         "Ativo": f,
                         "Origem": "Na Carteira" if f in fiis_carteira else "Pesquisado",
                         "Preço Mercado": preco_mercado,
                         "Preço Médio": pm,
                         "Var. Mercado / PM (%)": var_pm,
-                        "P/VP": pvp,
+                        "P/VP": float(pvp) if pd.notna(pvp) else 0.0,
                         "DY Mensal (%)": dy_mensal,
                         "DY Anual (%)": dy_anual
                     })
-                
+                    
                 if dados_fii:
                     df_radar_fii = pd.DataFrame(dados_fii)
                     
-                    fmt_fii = {
-                        "Preço Mercado": lambda x: f_brl(x) if pd.notna(x) and x > 0 else "-",
-                        "Preço Médio": lambda x: f_brl(x) if pd.notna(x) and x > 0 else "-",
-                        "Var. Mercado / PM (%)": lambda x: f_pct(x) if pd.notna(x) and x != 0 else "-",
-                        "P/VP": lambda x: f"{x:.2f}" if pd.notna(x) and x > 0 else "-",
-                        "DY Mensal (%)": lambda x: f_pct(x) if pd.notna(x) and x > 0 else "-",
-                        "DY Anual (%)": lambda x: f_pct(x) if pd.notna(x) and x > 0 else "-"
-                    }
+                    # Exibe como editor de dados para permitir digitação livre do P/VP
+                    df_editado_fii = st.data_editor(
+                        df_radar_fii,
+                        key="editor_radar_fiis_unique",
+                        use_container_width=True,
+                        hide_index=True,
+                        disabled=["Ativo", "Origem", "Preço Mercado", "Preço Médio", "Var. Mercado / PM (%)", "DY Mensal (%)", "DY Anual (%)"],
+                        column_config={
+                            "Preço Mercado": st.column_config.NumberColumn("Preço Mercado", format="R$ %.2f"),
+                            "Preço Médio": st.column_config.NumberColumn("Preço Médio", format="R$ %.2f"),
+                            "Var. Mercado / PM (%)": st.column_config.NumberColumn("Var. Mercado / PM", format="%.2f%%"),
+                            "P/VP": st.column_config.NumberColumn("P/VP", format="%.2f", min_value=0.0, max_value=3.0, step=0.01),
+                            "DY Mensal (%)": st.column_config.NumberColumn("DY Mensal", format="%.2f%%"),
+                            "DY Anual (%)": st.column_config.NumberColumn("DY Anual", format="%.2f%%"),
+                        }
+                    )
                     
-                    st.dataframe(df_radar_fii.style.format(fmt_fii), use_container_width=True, hide_index=True)
+                    # Salva os P/VPs digitados na memória da sessão
+                    if st.button("💾 Salvar Ajustes Manuais de P/VP", use_container_width=True):
+                        for _, row in df_editado_fii.iterrows():
+                            st.session_state.fii_pvp_manual[row['Ativo']] = float(row['P/VP'])
+                        st.success("Fundamentos atualizados e salvos com sucesso!")
+                        st.rerun()
         else:
             st.info("Nenhum FII identificado. Comece inserindo um ativo no campo acima.")
+            
     with tab_graf:
         st.markdown("#### Gráficos de Distribuição Patrimonial")
         cg1, cg2 = st.columns(2)
