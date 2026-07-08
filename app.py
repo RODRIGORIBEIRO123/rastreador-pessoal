@@ -1151,7 +1151,7 @@ if st.session_state.dados_mercado:
                     tk_clean += '11'
                 if tk_clean not in st.session_state.fiis_pesquisados:
                     st.session_state.fiis_pesquisados.append(tk_clean)
-                    st.rerun()
+                st.rerun()
                     
         if c_fii3.button("🗑️ Limpar Pesquisas", use_container_width=True):
             st.session_state.fiis_pesquisados = []
@@ -1167,69 +1167,86 @@ if st.session_state.dados_mercado:
                 for f in todos_fiis:
                     pm = df_perf_final[df_perf_final['Ativo'] == f]['Preço Médio'].values[0] if f in fiis_carteira else 0.0
                     
+                    preco_mercado = 0.0
+                    pvp = np.nan
+                    dy_anual = 0.0
+                    dy_mensal = 0.0
+                    
                     try:
                         t = yf.Ticker(f"{f}.SA")
-                        info = t.info
                         
-                        # Preço Atual e P/VP
-                        preco_mercado = info.get('currentPrice', np.nan)
-                        if pd.isna(preco_mercado):
-                            hist = t.history(period="5d")
-                            preco_mercado = float(hist['Close'].iloc[-1]) if not hist.empty else 0.0
+                        # PREÇO ATUAL BLINDADO
+                        hist = t.history(period="5d")
+                        if not hist.empty:
+                            preco_mercado = float(hist['Close'].iloc[-1])
                             
-                        pvp = info.get('priceToBook', np.nan)
-                        
-                        # Processamento de Dividendos
-                        divs = t.dividends
-                        dy_anual = 0.0
-                        dy_mensal = 0.0
-                        
-                        if not divs.empty:
-                            if divs.index.tz is not None: 
-                                divs.index = divs.index.tz_localize(None)
+                        info = t.info if t.info else {}
+                        if preco_mercado == 0.0 and 'currentPrice' in info:
+                            preco_mercado = info['currentPrice']
                             
-                            hoje_fii = pd.Timestamp.now()
-                            # Soma dos últimos 12 meses
-                            divs_12m = divs[divs.index >= (hoje_fii - pd.DateOffset(months=12))]
-                            dy_anual = (divs_12m.sum() / preco_mercado) * 100 if preco_mercado > 0 else 0.0
-                            
-                            # Último dividendo pago (estimativa mensal)
-                            ultimo_div = float(divs.iloc[-1])
-                            dy_mensal = (ultimo_div / preco_mercado) * 100 if preco_mercado > 0 else 0.0
+                        # MOTOR DE P/VP (Calcula na raça se a corretora não mandar)
+                        pvp_info = info.get('priceToBook', np.nan)
+                        if pd.notna(pvp_info) and pvp_info is not None:
+                            pvp = float(pvp_info)
+                        else:
+                            bv = info.get('bookValue', np.nan)
+                            if pd.notna(bv) and bv > 0 and preco_mercado > 0:
+                                pvp = preco_mercado / float(bv)
+                            # Fallback: Tenta buscar o VPA da sua tabela manual de Valuation
+                            elif 'df_simul' in st.session_state and not st.session_state.df_simul.empty and f in st.session_state.df_simul['Ativo'].values:
+                                try:
+                                    vpa_simul = float(st.session_state.df_simul.loc[st.session_state.df_simul['Ativo'] == f, 'VPA (Contábil)'].values[0])
+                                    if vpa_simul > 0: pvp = preco_mercado / vpa_simul
+                                except: pass
+
+                        # DIVIDENDOS BLINDADOS
+                        try:
+                            divs = t.dividends
+                            if not divs.empty:
+                                if divs.index.tz is not None: 
+                                    divs.index = divs.index.tz_localize(None)
+                                
+                                hoje_fii = pd.Timestamp.now()
+                                divs_12m = divs[divs.index >= (hoje_fii - pd.DateOffset(months=12))]
+                                
+                                if preco_mercado > 0:
+                                    dy_anual = (float(divs_12m.sum()) / preco_mercado) * 100
+                                    ultimo_div = float(divs.iloc[-1])
+                                    dy_mensal = (ultimo_div / preco_mercado) * 100
+                        except: pass
                         
-                        # Distância percentual do seu PM para o Valor de Cotação
-                        var_pm = ((preco_mercado / pm) - 1) * 100 if pm > 0 else 0.0
-                        
-                        dados_fii.append({
-                            "Ativo": f,
-                            "Origem": "Na Carteira" if f in fiis_carteira else "Pesquisado",
-                            "Preço Mercado": preco_mercado,
-                            "Preço Médio": pm,
-                            "Var. Mercado / PM (%)": var_pm,
-                            "P/VP": pvp,
-                            "DY Mensal (%)": dy_mensal,
-                            "DY Anual (%)": dy_anual
-                        })
-                    except:
-                        pass
+                    except: pass # Se a conexão falhar, desenha a linha zerada mas NÃO apaga o ativo!
+                    
+                    # Distância percentual do seu PM para o Valor de Cotação
+                    var_pm = ((preco_mercado / pm) - 1) * 100 if pm > 0 and preco_mercado > 0 else 0.0
+                    
+                    # A linha do ativo é SEMPRE salva, resolvendo o mistério do HGLG11
+                    dados_fii.append({
+                        "Ativo": f,
+                        "Origem": "Na Carteira" if f in fiis_carteira else "Pesquisado",
+                        "Preço Mercado": preco_mercado,
+                        "Preço Médio": pm,
+                        "Var. Mercado / PM (%)": var_pm,
+                        "P/VP": pvp,
+                        "DY Mensal (%)": dy_mensal,
+                        "DY Anual (%)": dy_anual
+                    })
                 
                 if dados_fii:
                     df_radar_fii = pd.DataFrame(dados_fii)
                     
-                    # Formatação visual sem perder a lógica matemática (permite ordenação)
                     fmt_fii = {
-                        "Preço Mercado": f_brl,
-                        "Preço Médio": lambda x: f_brl(x) if x > 0 else "-",
-                        "Var. Mercado / PM (%)": lambda x: f_pct(x) if x != 0 else "-",
-                        "P/VP": lambda x: f"{x:.2f}" if pd.notna(x) else "-",
-                        "DY Mensal (%)": f_pct,
-                        "DY Anual (%)": f_pct
+                        "Preço Mercado": lambda x: f_brl(x) if pd.notna(x) and x > 0 else "-",
+                        "Preço Médio": lambda x: f_brl(x) if pd.notna(x) and x > 0 else "-",
+                        "Var. Mercado / PM (%)": lambda x: f_pct(x) if pd.notna(x) and x != 0 else "-",
+                        "P/VP": lambda x: f"{x:.2f}" if pd.notna(x) and x > 0 else "-",
+                        "DY Mensal (%)": lambda x: f_pct(x) if pd.notna(x) and x > 0 else "-",
+                        "DY Anual (%)": lambda x: f_pct(x) if pd.notna(x) and x > 0 else "-"
                     }
                     
                     st.dataframe(df_radar_fii.style.format(fmt_fii), use_container_width=True, hide_index=True)
         else:
             st.info("Nenhum FII identificado. Comece inserindo um ativo no campo acima.")
-
     with tab_graf:
         st.markdown("#### Gráficos de Distribuição Patrimonial")
         cg1, cg2 = st.columns(2)
