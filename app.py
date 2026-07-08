@@ -1136,16 +1136,20 @@ if st.session_state.dados_mercado:
 
     with tab_radar_fii:
         st.markdown("### 🏢 Radar Analítico de FIIs")
-        st.info("Acompanhe os fundos da sua carteira e adicione novos ativos do mercado para comparar fundamentos. **Clique no cabeçalho das colunas para ordenar.**")
+        st.info("Acompanhe os fundos da sua carteira e adicione novos ativos do mercado. **Clique no cabeçalho das colunas para ordenar.**")
         
         if 'fiis_pesquisados' not in st.session_state:
             st.session_state.fiis_pesquisados = []
             
-        c_fii1, c_fii2, c_fii3 = st.columns([2, 1, 1])
-        novo_fii = c_fii1.text_input("Simular FII fora da carteira (Ex: HGLG11):", key="input_novo_fii")
-        
-        if c_fii2.button("🔍 Buscar Ativo", use_container_width=True):
-            if novo_fii:
+        # --- CORREÇÃO 1: st.form evita que a tela apague o ativo ao apertar Enter ---
+        with st.form("busca_fii_form", clear_on_submit=True):
+            c_fii1, c_fii2, c_fii3 = st.columns([2, 1, 1])
+            novo_fii = c_fii1.text_input("Simular FII fora da carteira (Ex: HGLG11):")
+            
+            btn_buscar = c_fii2.form_submit_button("🔍 Buscar Ativo", use_container_width=True)
+            btn_limpar = c_fii3.form_submit_button("🗑️ Limpar Pesquisas", use_container_width=True)
+            
+            if btn_buscar and novo_fii:
                 tk_clean = novo_fii.upper().strip()
                 if not tk_clean.endswith('11'): 
                     tk_clean += '11'
@@ -1153,17 +1157,20 @@ if st.session_state.dados_mercado:
                     st.session_state.fiis_pesquisados.append(tk_clean)
                 st.rerun()
                     
-        if c_fii3.button("🗑️ Limpar Pesquisas", use_container_width=True):
-            st.session_state.fiis_pesquisados = []
-            st.rerun()
+            if btn_limpar:
+                st.session_state.fiis_pesquisados = []
+                st.rerun()
                 
         # Junta os FIIs que você já tem com os que você pesquisou
-        fiis_carteira = df_perf_final[df_perf_final['Tipo'] == 'FII']['Ativo'].tolist() if not df_perf_final.empty else []
+        fiis_carteira = df_perf_final[df_perf_final['Tipo'] == 'FII']['Ativo'].tolist() if ('df_perf_final' in locals() and not df_perf_final.empty) else []
         todos_fiis = list(set(fiis_carteira + st.session_state.fiis_pesquisados))
         
         if todos_fiis:
-            with st.spinner("Mapeando balanços e dividendos no mercado vivo..."):
+            with st.spinner("Bypass ativado: Cruzando Yahoo Finance com StatusInvest..."):
                 dados_fii = []
+                import urllib.request
+                import re
+                
                 for f in todos_fiis:
                     pm = df_perf_final[df_perf_final['Ativo'] == f]['Preço Médio'].values[0] if f in fiis_carteira else 0.0
                     
@@ -1172,55 +1179,61 @@ if st.session_state.dados_mercado:
                     dy_anual = 0.0
                     dy_mensal = 0.0
                     
+                    # 1. Tenta Yahoo Finance para preço
                     try:
                         t = yf.Ticker(f"{f}.SA")
-                        
-                        # PREÇO ATUAL BLINDADO
                         hist = t.history(period="5d")
                         if not hist.empty:
                             preco_mercado = float(hist['Close'].iloc[-1])
+                        elif 'currentPrice' in t.info:
+                            preco_mercado = float(t.info['currentPrice'])
                             
-                        info = t.info if t.info else {}
-                        if preco_mercado == 0.0 and 'currentPrice' in info:
-                            preco_mercado = info['currentPrice']
-                            
-                        # MOTOR DE P/VP (Calcula na raça se a corretora não mandar)
-                        pvp_info = info.get('priceToBook', np.nan)
-                        if pd.notna(pvp_info) and pvp_info is not None:
-                            pvp = float(pvp_info)
-                        else:
-                            bv = info.get('bookValue', np.nan)
-                            if pd.notna(bv) and bv > 0 and preco_mercado > 0:
-                                pvp = preco_mercado / float(bv)
-                            # Fallback: Tenta buscar o VPA da sua tabela manual de Valuation
-                            elif 'df_simul' in st.session_state and not st.session_state.df_simul.empty and f in st.session_state.df_simul['Ativo'].values:
-                                try:
-                                    vpa_simul = float(st.session_state.df_simul.loc[st.session_state.df_simul['Ativo'] == f, 'VPA (Contábil)'].values[0])
-                                    if vpa_simul > 0: pvp = preco_mercado / vpa_simul
-                                except: pass
-
-                        # DIVIDENDOS BLINDADOS
-                        try:
-                            divs = t.dividends
-                            if not divs.empty:
-                                if divs.index.tz is not None: 
-                                    divs.index = divs.index.tz_localize(None)
-                                
-                                hoje_fii = pd.Timestamp.now()
-                                divs_12m = divs[divs.index >= (hoje_fii - pd.DateOffset(months=12))]
-                                
-                                if preco_mercado > 0:
-                                    dy_anual = (float(divs_12m.sum()) / preco_mercado) * 100
-                                    ultimo_div = float(divs.iloc[-1])
-                                    dy_mensal = (ultimo_div / preco_mercado) * 100
-                        except: pass
-                        
-                    except: pass # Se a conexão falhar, desenha a linha zerada mas NÃO apaga o ativo!
+                        divs = t.dividends
+                        if not divs.empty:
+                            if divs.index.tz is not None: divs.index = divs.index.tz_localize(None)
+                            hoje_fii = pd.Timestamp.now()
+                            divs_12m = divs[divs.index >= (hoje_fii - pd.DateOffset(months=12))]
+                            if preco_mercado > 0:
+                                dy_anual = (float(divs_12m.sum()) / preco_mercado) * 100
+                                dy_mensal = (float(divs.iloc[-1]) / preco_mercado) * 100
+                    except: pass
                     
-                    # Distância percentual do seu PM para o Valor de Cotação
+                    # --- CORREÇÃO 2: Bypass de Web Scraping para FIIs ---
+                    # Yahoo Finance é cego para P/VP de FII. Vamos buscar direto na raça!
+                    if pd.isna(pvp) or pvp == 0 or dy_anual == 0:
+                        try:
+                            req = urllib.request.Request(
+                                f"https://statusinvest.com.br/fundos-imobiliarios/{f.lower()}", 
+                                headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+                            )
+                            html = urllib.request.urlopen(req, timeout=3).read().decode('utf-8')
+                            
+                            # Sequestra o P/VP
+                            if pd.isna(pvp) or pvp == 0:
+                                match_pvp = re.search(r'P/VP.*?<strong[^>]*>([\d,]+)</strong>', html, re.IGNORECASE | re.DOTALL)
+                                if match_pvp: pvp = float(match_pvp.group(1).replace(',', '.'))
+                                
+                            # Sequestra o DY Anual (se o Yahoo falhou)
+                            if dy_anual == 0:
+                                match_dy = re.search(r'Dividend Yield.*?<strong[^>]*>([\d,]+)</strong>', html, re.IGNORECASE | re.DOTALL)
+                                if match_dy: dy_anual = float(match_dy.group(1).replace(',', '.'))
+                                
+                            # Se não pegou nem o preço do Yahoo, pega daqui também
+                            if preco_mercado == 0:
+                                match_pr = re.search(r'Valor atual.*?<strong[^>]*>([\d,]+)</strong>', html, re.IGNORECASE | re.DOTALL)
+                                if match_pr: preco_mercado = float(match_pr.group(1).replace(',', '.'))
+                        except: pass
+                    
+                    # Fallback de segurança (sua tabela de Valuation)
+                    if pd.isna(pvp) or pvp == 0:
+                        if 'df_simul' in st.session_state and not st.session_state.df_simul.empty and f in st.session_state.df_simul['Ativo'].values:
+                            try:
+                                vpa_simul = float(st.session_state.df_simul.loc[st.session_state.df_simul['Ativo'] == f, 'VPA (Contábil)'].values[0])
+                                if vpa_simul > 0 and preco_mercado > 0: pvp = preco_mercado / vpa_simul
+                            except: pass
+
                     var_pm = ((preco_mercado / pm) - 1) * 100 if pm > 0 and preco_mercado > 0 else 0.0
                     
-                    # A linha do ativo é SEMPRE salva, resolvendo o mistério do HGLG11
                     dados_fii.append({
                         "Ativo": f,
                         "Origem": "Na Carteira" if f in fiis_carteira else "Pesquisado",
