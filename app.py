@@ -928,10 +928,11 @@ st.write("---")
 # ==========================================
 # 7. DASHBOARDS E RELATÓRIOS (TABS DE ANÁLISE)
 # ==========================================
-tab_visao, tab_val, tab_radar, tab_graf, tab_prov, tab_tesouro, tab_extrato, tab_ia = st.tabs([
+tab_visao, tab_val, tab_radar, tab_radar_fii, tab_graf, tab_prov, tab_tesouro, tab_extrato, tab_ia = st.tabs([
     "📊 Visão Geral", 
     "💰 Valuation", 
-    "🎯 Radar & Projeção", 
+    "🎯 Radar & Projeção",
+    "🏢 Radar FIIs", 
     "📈 Gráficos", 
     "💸 Proventos B3", 
     "🏛️ Tesouro Direto", 
@@ -1132,6 +1133,102 @@ if st.session_state.dados_mercado:
         fig_proj.update_layout(barmode='stack', yaxis_title="Patrimônio (R$)", xaxis_title="Evolução Mensal")
         
         st.plotly_chart(fig_proj, use_container_width=True)
+
+    with tab_radar_fii:
+        st.markdown("### 🏢 Radar Analítico de FIIs")
+        st.info("Acompanhe os fundos da sua carteira e adicione novos ativos do mercado para comparar fundamentos. **Clique no cabeçalho das colunas para ordenar.**")
+        
+        if 'fiis_pesquisados' not in st.session_state:
+            st.session_state.fiis_pesquisados = []
+            
+        c_fii1, c_fii2, c_fii3 = st.columns([2, 1, 1])
+        novo_fii = c_fii1.text_input("Simular FII fora da carteira (Ex: HGLG11):", key="input_novo_fii")
+        
+        if c_fii2.button("🔍 Buscar Ativo", use_container_width=True):
+            if novo_fii:
+                tk_clean = novo_fii.upper().strip()
+                if not tk_clean.endswith('11'): 
+                    tk_clean += '11'
+                if tk_clean not in st.session_state.fiis_pesquisados:
+                    st.session_state.fiis_pesquisados.append(tk_clean)
+                    st.rerun()
+                    
+        if c_fii3.button("🗑️ Limpar Pesquisas", use_container_width=True):
+            st.session_state.fiis_pesquisados = []
+            st.rerun()
+                
+        # Junta os FIIs que você já tem com os que você pesquisou
+        fiis_carteira = df_perf_final[df_perf_final['Tipo'] == 'FII']['Ativo'].tolist() if not df_perf_final.empty else []
+        todos_fiis = list(set(fiis_carteira + st.session_state.fiis_pesquisados))
+        
+        if todos_fiis:
+            with st.spinner("Mapeando balanços e dividendos no mercado vivo..."):
+                dados_fii = []
+                for f in todos_fiis:
+                    pm = df_perf_final[df_perf_final['Ativo'] == f]['Preço Médio'].values[0] if f in fiis_carteira else 0.0
+                    
+                    try:
+                        t = yf.Ticker(f"{f}.SA")
+                        info = t.info
+                        
+                        # Preço Atual e P/VP
+                        preco_mercado = info.get('currentPrice', np.nan)
+                        if pd.isna(preco_mercado):
+                            hist = t.history(period="5d")
+                            preco_mercado = float(hist['Close'].iloc[-1]) if not hist.empty else 0.0
+                            
+                        pvp = info.get('priceToBook', np.nan)
+                        
+                        # Processamento de Dividendos
+                        divs = t.dividends
+                        dy_anual = 0.0
+                        dy_mensal = 0.0
+                        
+                        if not divs.empty:
+                            if divs.index.tz is not None: 
+                                divs.index = divs.index.tz_localize(None)
+                            
+                            hoje_fii = pd.Timestamp.now()
+                            # Soma dos últimos 12 meses
+                            divs_12m = divs[divs.index >= (hoje_fii - pd.DateOffset(months=12))]
+                            dy_anual = (divs_12m.sum() / preco_mercado) * 100 if preco_mercado > 0 else 0.0
+                            
+                            # Último dividendo pago (estimativa mensal)
+                            ultimo_div = float(divs.iloc[-1])
+                            dy_mensal = (ultimo_div / preco_mercado) * 100 if preco_mercado > 0 else 0.0
+                        
+                        # Distância percentual do seu PM para o Valor de Cotação
+                        var_pm = ((preco_mercado / pm) - 1) * 100 if pm > 0 else 0.0
+                        
+                        dados_fii.append({
+                            "Ativo": f,
+                            "Origem": "Na Carteira" if f in fiis_carteira else "Pesquisado",
+                            "Preço Mercado": preco_mercado,
+                            "Preço Médio": pm,
+                            "Var. Mercado / PM (%)": var_pm,
+                            "P/VP": pvp,
+                            "DY Mensal (%)": dy_mensal,
+                            "DY Anual (%)": dy_anual
+                        })
+                    except:
+                        pass
+                
+                if dados_fii:
+                    df_radar_fii = pd.DataFrame(dados_fii)
+                    
+                    # Formatação visual sem perder a lógica matemática (permite ordenação)
+                    fmt_fii = {
+                        "Preço Mercado": f_brl,
+                        "Preço Médio": lambda x: f_brl(x) if x > 0 else "-",
+                        "Var. Mercado / PM (%)": lambda x: f_pct(x) if x != 0 else "-",
+                        "P/VP": lambda x: f"{x:.2f}" if pd.notna(x) else "-",
+                        "DY Mensal (%)": f_pct,
+                        "DY Anual (%)": f_pct
+                    }
+                    
+                    st.dataframe(df_radar_fii.style.format(fmt_fii), use_container_width=True, hide_index=True)
+        else:
+            st.info("Nenhum FII identificado. Comece inserindo um ativo no campo acima.")
 
     with tab_graf:
         st.markdown("#### Gráficos de Distribuição Patrimonial")
