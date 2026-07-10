@@ -165,10 +165,6 @@ def hash_password(password):
     return hashlib.sha256(password.encode()).hexdigest()
 
 def registrar_usuario(username, password):
-    # ==========================================
-# BYPASS DE EMERGÊNCIA - RECRIAR USUÁRIO
-# ==========================================
-registrar_usuario("rodrigo", "admin123")
     conn = get_db_connection()
     c = conn.cursor()
     try:
