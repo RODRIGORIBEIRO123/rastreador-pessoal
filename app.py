@@ -286,7 +286,6 @@ def carregar_dados_completos_db(username):
         st.session_state.historico_chat = [{"role": "assistant", "content": f"Saudações, {username}. O terminal está mapeado e pronto."}]
 
 init_db()
-registrar_usuario("rodrigo", "admin123")
 
 # ==========================================
 # 3. GATEKEEPER - TELA DE AUTENTICAÇÃO
