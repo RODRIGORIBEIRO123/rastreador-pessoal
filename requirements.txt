@@ -6,5 +6,5 @@ openpyxl
 plotly
 requests
 google-generativeai
-psycopg2
+psycopg2-binary
 python-docx
