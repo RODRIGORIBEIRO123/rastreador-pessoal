@@ -292,11 +292,6 @@ registrar_usuario("rodrigo", "admin123")
 # 3. GATEKEEPER - TELA DE AUTENTICAÇÃO
 # ==========================================
 if not st.session_state.logged_in:
-
-# ==========================================
-# 3. GATEKEEPER - TELA DE AUTENTICAÇÃO
-# ==========================================
-if not st.session_state.logged_in:
     st.markdown("<h1 style='text-align: center;'>🔐 Terminal de Gestão Profissional</h1>", unsafe_allow_html=True)
     st.markdown("<p style='text-align: center;'>Acesso restrito. Identifique-se para carregar seu portfólio.</p>", unsafe_allow_html=True)
     
